@@ -1,0 +1,123 @@
+# Echo
+
+A local, self-hosted replacement for Notion AI Meeting Notes (macOS, Apple Silicon).
+
+A menu-bar app detects calls and records them locally; a local pipeline transcribes
+with whisper.cpp (on-device, Metal), summarizes the transcript with the Claude API,
+and creates a structured page in your Notion **Calls** database. Notion stays a
+pure frontend/store — no paid Business plan needed.
+
+**Privacy:** audio and transcription never leave the machine. Only the text
+transcript is sent to the Claude API.
+
+## Status
+
+- **Phase 1 — pipeline (this repo, done):** `audio file → whisper.cpp → Claude → Notion page`. Testable standalone.
+- **Phase 2 — native app:** SwiftUI `MenuBarExtra`, manual Start/Stop, mic + system-audio capture (two tracks → free "Me / Them" labels).
+- **Phase 3 — auto-detect:** Core Audio (`kAudioDevicePropertyDeviceIsRunningSomewhere`) → "Looks like a call started — record?"
+- **Phase 4 — enrichment:** pull the current Google Calendar event (title + attendees).
+
+---
+
+## Phase 1 setup (one-time)
+
+### 1. Notion integration
+
+1. Go to <https://www.notion.so/my-integrations> → **New integration** (internal).
+2. Copy the **Internal Integration Secret** → this is `NOTION_TOKEN`.
+3. Share **both** databases with the integration: open each database in Notion →
+   `•••` menu → **Connections** → add your integration.
+   - **Calls** database — where notes are created.
+   - **Projects** database — used to auto-attach each note to the right project.
+
+The database IDs are already filled in `.env.example`:
+- Calls: `<your-calls-db-id>`
+- Projects: `<your-projects-db-id>`
+
+(If sharing fails or the API rejects `database_id`, your workspace may require the
+newer data-source API — see "Notion API note" below.)
+
+### 2. Anthropic API key
+
+Get a key at <https://console.anthropic.com/> → `ANTHROPIC_API_KEY`.
+Default model is `claude-sonnet-4-6`.
+
+### 3. whisper.cpp (local transcription, Metal)
+
+```bash
+# build whisper.cpp with Metal
+brew install cmake ffmpeg            # ffmpeg is used to convert audio to 16kHz wav
+git clone https://github.com/ggml-org/whisper.cpp ~/whisper.cpp
+cd ~/whisper.cpp
+cmake -B build -DWHISPER_METAL=ON
+cmake --build build -j --config Release
+# the CLI binary lands at: ~/whisper.cpp/build/bin/whisper-cli
+
+# download the large-v3 model (~3 GB)
+bash ./models/download-ggml-model.sh large-v3
+# -> ~/whisper.cpp/models/ggml-large-v3.bin
+```
+
+Point `WHISPER_CPP_PATH` at the `whisper-cli` binary, and `WHISPER_MODEL` at the
+`.bin` (or copy the model into `pipeline/models/`).
+
+> Tip for a faster smoke test you can grab `base` or `small` instead of
+> `large-v3`; keep `large-v3` for real Ukrainian/Russian quality.
+
+### 4. Configure
+
+```bash
+cd pipeline
+cp .env.example .env
+# edit .env: ANTHROPIC_API_KEY, NOTION_TOKEN, WHISPER_CPP_PATH, WHISPER_MODEL
+npm install
+```
+
+---
+
+## Run
+
+```bash
+# from repo root
+./samples/make-sample.sh                       # makes samples/test.m4a (macOS)
+
+# full run: transcribe -> summarize -> create Notion page
+node pipeline/src/index.js samples/test.m4a
+
+# see what would happen without calling Claude / writing to Notion
+node pipeline/src/index.js samples/test.m4a --dry-run
+
+# skip whisper and use a transcript you already have
+node pipeline/src/index.js --transcript=path/to/transcript.txt
+```
+
+The created Notion page lands in **Calls** with: title, date, participants, the
+Project relation (auto-matched by Claude from your active projects), a TL;DR,
+Decisions, Action items (as to-do checkboxes), Open questions, and the full
+transcript inside a collapsed toggle.
+
+Configuration knobs (`.env`):
+- `SUMMARY_LANG` — `auto` (match the meeting), or force `ru` / `uk` / `en`.
+- `WHISPER_LANG` — `auto`, or force `ru` / `uk` / `en`.
+
+---
+
+## Notion API note
+
+This repo uses `@notionhq/client` with `parent.database_id`, which works for
+single-source databases. Notion is migrating to a "data sources" model; if a
+future API version requires `data_source_id`, update `pipeline/src/notion.js`
+(`pages.create` parent and `databases.query`) accordingly. The data-source ID for
+Calls is `<your-calls-data-source-id>`.
+
+## Layout
+
+```
+Echo/
+├── pipeline/        # Phase 1 (Node)
+│   ├── src/         # config, transcribe, summarize, notion, index
+│   ├── prompts/     # summary prompt + JSON contract
+│   └── models/      # whisper models (gitignored)
+├── app/             # Phase 2+ native macOS app (placeholder)
+└── samples/         # test audio (gitignored)
+```

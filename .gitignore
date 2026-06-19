@@ -1,0 +1,23 @@
+# secrets
+.env
+pipeline/.env
+
+# whisper models (large, downloaded locally)
+pipeline/models/*
+!pipeline/models/.gitkeep
+
+# test audio
+samples/*
+!samples/.gitkeep
+!samples/README.md
+!samples/make-sample.sh
+
+# node
+node_modules/
+npm-debug.log*
+
+# os / editor
+.DS_Store
+*.log
+.vscode/
+.idea/
