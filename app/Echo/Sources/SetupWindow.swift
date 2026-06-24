@@ -1,11 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Hosts the onboarding window (a plain AppKit window so we can open it on launch
-/// even for a menu-bar-only LSUIElement app). Reused by the launch hook and the
-/// "Set up Echo…" menu item.
+/// Hosts the onboarding window. Echo is a menu-bar-only (LSUIElement / accessory)
+/// app, so a plain NSWindow won't take keyboard focus — its text fields stay
+/// uneditable. We flip the app to `.regular` while the window is open (so it can
+/// become key and accept input) and back to `.accessory` when it closes.
 @MainActor
-final class SetupWindow {
+final class SetupWindow: NSObject, NSWindowDelegate {
     static let shared = SetupWindow()
     private var window: NSWindow?
 
@@ -18,11 +19,18 @@ final class SetupWindow {
             w.title = "Set up Echo"
             w.contentViewController = NSHostingController(rootView: OnboardingView())
             w.isReleasedWhenClosed = false
+            w.delegate = self
             w.center()
             window = w
         }
+        NSApp.setActivationPolicy(.regular)      // become a normal app so the window can be key
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)    // back to menu-bar-only
     }
 }
 
