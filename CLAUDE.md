@@ -7,8 +7,9 @@ This file is a ROUTER — read the pointed file when its topic is relevant, don'
 transcript is sent to the Claude API.
 
 ## Architecture (two parts)
-1. **Native menu-bar app** (Swift / SwiftUI `MenuBarExtra`) — Phases 2-4, not built. Detects
-   calls, records mic + system audio (two tracks → "Me / Them"), invokes the pipeline.
+1. **Native menu-bar app** (Swift / SwiftUI `MenuBarExtra`, `app/`) — Phases 2–4, built &
+   verified. Auto-detects calls, records mic + system audio (two tracks → "Me / Them"),
+   enriches from Calendar, invokes the pipeline. Built by `app/build.sh` (no Xcode project).
 2. **Pipeline** (Node, `pipeline/`) — Phase 1, done. `audio → whisper.cpp → Claude → Notion`.
 
 ## Stack
@@ -51,6 +52,6 @@ A task is DONE only when the **Definition of Done** in `memory/rules/execution.m
 6. Git: **commit only — never push.**
 
 ## Status
-Phase 0 ✅ · Phase 1 ✅ (pipeline, verified) · Phase 2 ⬜ native app · Phase 3 ⬜ auto-detect ·
-Phase 4 ⬜ Calendar enrichment. Live run still needs: Notion integration + shared DBs,
-whisper.cpp build + `ggml-large-v3` (and `ANTHROPIC_API_KEY` only if `SUMMARY_BACKEND=api`).
+Phase 0 ✅ · Phase 1 ✅ (pipeline) · Phase 2 ✅ (menu-bar app, two-track) · Phase 3 ✅ (auto
+start/stop) · Phase 4 ✅ (Calendar enrichment). **All verified on real calls.** Setup +
+architecture: `memory/architecture/onboarding.md`; per-part design in `memory/projects/`.

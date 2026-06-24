@@ -3,19 +3,23 @@
 A local, self-hosted replacement for Notion AI Meeting Notes (macOS, Apple Silicon).
 
 A menu-bar app detects calls and records them locally; a local pipeline transcribes
-with whisper.cpp (on-device, Metal), summarizes the transcript with the Claude API,
-and creates a structured page in your Notion **Calls** database. Notion stays a
-pure frontend/store — no paid Business plan needed.
+with whisper.cpp (on-device, Metal), summarizes the transcript with Claude (your
+Claude Code subscription by default, or the API), and creates a structured page in
+your Notion **Calls** database. Notion stays a pure frontend/store — no paid
+Business plan needed.
 
 **Privacy:** audio and transcription never leave the machine. Only the text
-transcript is sent to the Claude API.
+transcript is sent to Claude.
 
-## Status
+## Status — all phases built & verified on real calls ✅
 
-- **Phase 1 — pipeline (this repo, done):** `audio file → whisper.cpp → Claude → Notion page`. Testable standalone.
-- **Phase 2 — native app:** SwiftUI `MenuBarExtra`, manual Start/Stop, mic + system-audio capture (two tracks → free "Me / Them" labels).
-- **Phase 3 — auto-detect:** Core Audio (`kAudioDevicePropertyDeviceIsRunningSomewhere`) → "Looks like a call started — record?"
-- **Phase 4 — enrichment:** pull the current Google Calendar event (title + attendees).
+- **Phase 1 — pipeline:** `audio → whisper.cpp (VAD, large-v3) → Claude → Notion page`. Testable standalone.
+- **Phase 2 — native app:** SwiftUI `MenuBarExtra`, two-track capture (mic + system audio → "Me / Them").
+- **Phase 3 — auto-detect:** per-process Core Audio → auto **start and** auto **stop + summarize**.
+- **Phase 4 — enrichment:** current calendar event (title + attendees) via EventKit → names, title, project.
+
+App build/run: [`app/README.md`](app/README.md). Architecture & onboarding:
+[`memory/architecture/onboarding.md`](memory/architecture/onboarding.md), [`memory/projects/`](memory/projects/).
 
 ---
 
