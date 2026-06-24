@@ -43,7 +43,6 @@ final class CallDetector {
 
     private func poll() {
         let others = otherMicInputPIDs()
-        DebugLog.log("poll: otherMicPIDs=\(others) callActive=\(callActive)")
         if !others.isEmpty {
             freeSince = nil
             if !callActive {
