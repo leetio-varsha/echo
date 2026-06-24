@@ -41,10 +41,13 @@ Here is the list of the user's active projects:
 
 {{PROJECT_LIST}}
 
-Set `suggested_project` to the EXACT name (verbatim, from the list above) of the
-project this meeting is most clearly about. If you are not reasonably confident,
-or the meeting matches none of them, set it to `null`. Never invent a project
-name that is not in the list.
+Set `suggested_project` to the EXACT name (verbatim, from the list above) ONLY IF
+the meeting is substantively ABOUT that project's work — its tasks, decisions,
+status, or people. Be conservative: **a wrong attachment is worse than none.**
+Set `null` when the call is small talk, a tool/setup/recording test, a general or
+exploratory discussion, or only loosely or topically related to a project. Do NOT
+infer a project from surface keywords or because a topic merely "sounds like" one.
+If you are not clearly confident, set `null`. Never invent a name not in the list.
 
 ## Transcript
 
