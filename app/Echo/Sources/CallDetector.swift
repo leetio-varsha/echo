@@ -1,5 +1,6 @@
 import Foundation
 import CoreAudio
+import Darwin
 
 /// Detects when a call is happening by watching whether any process *other than
 /// Echo itself* is using audio input (the microphone). Fires `onCallStart` when
@@ -14,6 +15,9 @@ final class CallDetector {
     var onCallEnd: (() -> Void)?
 
     private let myPID = ProcessInfo.processInfo.processIdentifier
+    // Daemons spun up by Echo's OWN recording (ScreenCaptureKit → replayd) show as
+    // mic-input processes and never release; they aren't "calls", so ignore them.
+    private let excludedNames: Set<String> = ["replayd", "coreaudiod"]
     private let pollInterval: TimeInterval = 2
     private let endDebounce: TimeInterval = 5   // mic must stay free this long to end a call
 
@@ -22,6 +26,7 @@ final class CallDetector {
     private var freeSince: Date?
 
     func start() {
+        DebugLog.log("detector start, myPID=\(myPID)")
         let t = DispatchSource.makeTimerSource(queue: .main)
         t.schedule(deadline: .now() + 1, repeating: pollInterval)
         t.setEventHandler { [weak self] in self?.poll() }
@@ -37,26 +42,30 @@ final class CallDetector {
     }
 
     private func poll() {
-        let othersOnMic = micUsedByOtherProcess()
-        if othersOnMic {
+        let others = otherMicInputPIDs()
+        DebugLog.log("poll: otherMicPIDs=\(others) callActive=\(callActive)")
+        if !others.isEmpty {
             freeSince = nil
             if !callActive {
                 callActive = true
+                DebugLog.log("CALL START (mic grabbed by \(others))")
                 onCallStart?()
             }
         } else if callActive {
             if freeSince == nil {
                 freeSince = Date()
+                DebugLog.log("mic free — \(endDebounce)s debounce started")
             } else if Date().timeIntervalSince(freeSince!) >= endDebounce {
                 callActive = false
                 freeSince = nil
+                DebugLog.log("CALL END fired")
                 onCallEnd?()
             }
         }
     }
 
-    /// True if any audio process other than Echo currently has input running.
-    private func micUsedByOtherProcess() -> Bool {
+    /// PIDs of audio processes other than Echo that currently have input running.
+    private func otherMicInputPIDs() -> [pid_t] {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -65,19 +74,30 @@ final class CallDetector {
         var size: UInt32 = 0
         let sys = AudioObjectID(kAudioObjectSystemObject)
         guard AudioObjectGetPropertyDataSize(sys, &addr, 0, nil, &size) == noErr, size > 0 else {
-            return false
+            return []
         }
         let count = Int(size) / MemoryLayout<AudioObjectID>.size
         var procs = [AudioObjectID](repeating: 0, count: count)
         guard AudioObjectGetPropertyData(sys, &addr, 0, nil, &size, &procs) == noErr else {
-            return false
+            return []
         }
 
+        var result: [pid_t] = []
         for proc in procs {
-            if processPID(proc) == myPID { continue }
-            if processInputRunning(proc) { return true }
+            let pid = processPID(proc)
+            if pid == myPID { continue }
+            if excludedNames.contains(processName(pid)) { continue }
+            if processInputRunning(proc) { result.append(pid) }
         }
-        return false
+        return result
+    }
+
+    /// Short executable name for a PID (e.g. "replayd"), or "" if unavailable.
+    private func processName(_ pid: pid_t) -> String {
+        guard pid > 0 else { return "" }
+        var buf = [CChar](repeating: 0, count: 256)
+        let n = proc_name(pid, &buf, UInt32(buf.count))
+        return n > 0 ? String(cString: buf) : ""
     }
 
     private func processPID(_ proc: AudioObjectID) -> pid_t {

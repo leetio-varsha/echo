@@ -42,6 +42,7 @@ final class AppState: ObservableObject {
 
     private func start(auto: Bool) async {
         status = auto ? "Call detected — recording…" : "Requesting permissions…"
+        DebugLog.log("AppState.start(auto: \(auto))")
         do {
             try await recorder.requestPermissions()
             try await recorder.start()
@@ -61,9 +62,11 @@ final class AppState: ObservableObject {
         isRecording = false
         let elapsed = startedAt.map { Date().timeIntervalSince($0) } ?? 0
         startedAt = nil
+        DebugLog.log("AppState.stop elapsed=\(Int(elapsed))s")
         let out = await recorder.stop()
 
         if elapsed < minDuration {
+            DebugLog.log("discarded — too short (<\(Int(minDuration))s)")
             status = "Ignored short session (\(Int(elapsed))s)"
             discard(out)
             return
