@@ -14,6 +14,7 @@ final class AppState: ObservableObject {
     private let recorder = TwoTrackRecorder()
     private let detector = CallDetector()
     private var startedAt: Date?
+    private var meetingPath: URL?
     private let minDuration: TimeInterval = 15 // discard accidental short mic blips
 
     var menuIcon: String { isRecording ? "record.circle.fill" : "waveform" }
@@ -52,6 +53,8 @@ final class AppState: ObservableObject {
             if auto {
                 notify(title: "Echo — recording a call", body: "Auto-detected. Stop anytime from the menu.")
             }
+            // Calendar enrichment (names + title + project). Best-effort; nil if none.
+            meetingPath = await CalendarLookup.currentMeetingJSON()
         } catch {
             isRecording = false
             status = "Error: \(error.localizedDescription)"
@@ -62,7 +65,9 @@ final class AppState: ObservableObject {
         isRecording = false
         let elapsed = startedAt.map { Date().timeIntervalSince($0) } ?? 0
         startedAt = nil
-        DebugLog.log("AppState.stop elapsed=\(Int(elapsed))s")
+        let mp = meetingPath?.path
+        meetingPath = nil
+        DebugLog.log("AppState.stop elapsed=\(Int(elapsed))s meeting=\(mp != nil)")
         let out = await recorder.stop()
 
         if elapsed < minDuration {
@@ -76,7 +81,7 @@ final class AppState: ObservableObject {
         status = "Transcribing & summarizing…"
         do {
             let url = try await Task.detached {
-                try PipelineRunner.run(mic: out.mic, system: out.system)
+                try PipelineRunner.run(mic: out.mic, system: out.system, meetingJSON: mp)
             }.value
             status = "Done ✓"
             notify(title: "Echo — note created", body: url)

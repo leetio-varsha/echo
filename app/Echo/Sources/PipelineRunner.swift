@@ -2,13 +2,15 @@ import Foundation
 
 /// Runs the Node pipeline on the two recorded tracks and returns the Notion URL.
 enum PipelineRunner {
-    static func run(mic: URL, system: URL) throws -> String {
+    static func run(mic: URL, system: URL, meetingJSON: String? = nil) throws -> String {
         let node = try resolveNode()
         let script = "\(BuildConfig.repoRoot)/pipeline/src/index.js"
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: node)
-        proc.arguments = [script, "--mic=\(mic.path)", "--system=\(system.path)"]
+        var arguments = [script, "--mic=\(mic.path)", "--system=\(system.path)"]
+        if let meetingJSON { arguments.append("--meeting-json=\(meetingJSON)") }
+        proc.arguments = arguments
         proc.currentDirectoryURL = URL(fileURLWithPath: BuildConfig.repoRoot)
 
         // A Finder-launched app inherits a minimal PATH. Give node the full login

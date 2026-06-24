@@ -23,5 +23,7 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Echo records your microphone as the "Me" track of a call. Audio stays on this Mac.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Echo reads the current meeting's title and attendees to label speakers and pick the project. Only event details are used; they stay on this Mac.</string>
 </dict>
 </plist>
