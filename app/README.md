@@ -30,6 +30,38 @@ A 🌊 icon appears in the menu bar. **Start Recording** → (first run) grant
 asks. **Stop & Summarize** runs the pipeline and posts a notification with the
 Notion page URL.
 
+## Stable signing (avoids re-granting permissions every rebuild)
+Ad-hoc signing (`codesign -`) changes the cdhash each build, so macOS forgets the
+Screen-Recording grant after every rebuild. `build.sh` automatically signs with a
+self-signed identity named **"Echo Self-Signed"** if it exists in your keychain
+(otherwise it falls back to ad-hoc). Create it once:
+
+```bash
+# via openssl + security (CN must be "Echo Self-Signed"):
+cat > /tmp/cs.cnf <<'CNF'
+[req]
+distinguished_name = dn
+x509_extensions = v3
+prompt = no
+[dn]
+CN = Echo Self-Signed
+[v3]
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+basicConstraints = critical, CA:false
+CNF
+/usr/bin/openssl req -x509 -newkey rsa:2048 -keyout /tmp/cs-key.pem -nodes \
+  -out /tmp/cs.pem -days 3650 -config /tmp/cs.cnf
+/usr/bin/openssl pkcs12 -export -inkey /tmp/cs-key.pem -in /tmp/cs.pem \
+  -out /tmp/cs.p12 -passout pass:echo -name "Echo Self-Signed"
+security import /tmp/cs.p12 -k ~/Library/Keychains/login.keychain-db -P echo -T /usr/bin/codesign
+```
+(Or Keychain Access → Certificate Assistant → Create a Certificate → Self-Signed
+Root, Code Signing, name "Echo Self-Signed".) The cert is untrusted as a root
+(`CSSMERR_TP_NOT_TRUSTED`) — that's fine for signing; TCC keys on the stable cert
+hash, so grants survive rebuilds. **First rebuild after switching from ad-hoc still
+needs one Screen-Recording re-grant** (the requirement changes once); after that it sticks.
+
 ## Requirements for a real run
 - whisper.cpp built + `ggml-large-v3` and `pipeline/.env` filled (see repo `README.md`).
 - `node` on your login-shell PATH (the app resolves it via `zsh -lc`).

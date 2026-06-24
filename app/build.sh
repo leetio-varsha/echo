@@ -33,8 +33,19 @@ swiftc \
 
 cp "$APP_DIR/Echo/Info.plist" "$APP/Contents/Info.plist"
 
-echo "Ad-hoc signing…"
-codesign --force --sign - "$APP"
+# Prefer a stable self-signed identity so the cdhash-independent designated
+# requirement stays constant across rebuilds → macOS Screen-Recording / Mic TCC
+# grants survive rebuilds. Falls back to ad-hoc (re-grant needed each rebuild).
+# Create the identity once via Keychain Access (Certificate Assistant → Code
+# Signing) or the openssl+security recipe; name it "Echo Self-Signed".
+IDENTITY="Echo Self-Signed"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
+  echo "Signing with stable identity: $IDENTITY (TCC grants survive rebuilds)…"
+  codesign --force --sign "$IDENTITY" "$APP"
+else
+  echo "Ad-hoc signing — '$IDENTITY' not found, TCC will re-prompt after each rebuild…"
+  codesign --force --sign - "$APP"
+fi
 
 echo "Built: $APP"
 echo "Run with: open \"$APP\"   (first launch will prompt for Microphone + Screen Recording)"
