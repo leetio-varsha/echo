@@ -28,14 +28,22 @@ struct OnboardingView: View {
             }
 
             Section("Notion") {
-                Text("Create a page in Notion, share it with your Echo integration, then paste the page link here. Echo will create the Calls + Projects databases for you.")
-                    .font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Echo writes call notes into your Notion. One-time setup:")
+                    Text("1. Create an integration and copy its **Internal Integration Secret** (`ntn_…`):")
+                    Link("→ open notion.so/my-integrations", destination: URL(string: "https://www.notion.so/my-integrations")!)
+                    Text("2. Create a page in Notion (e.g. “Echo”) to hold your notes.")
+                    Text("3. On that page: open the **•••** menu → **Connections** → add your integration.")
+                    Text("4. Paste the secret and the page's link (••• → **Copy link**) below.")
+                }
+                .font(.caption).foregroundStyle(.secondary)
+
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Integration token").font(.caption).foregroundStyle(.secondary)
+                    Text("Integration secret").font(.caption).foregroundStyle(.secondary)
                     SecureField("ntn_…", text: $token).textFieldStyle(.roundedBorder).labelsHidden()
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Parent page URL").font(.caption).foregroundStyle(.secondary)
+                    Text("Page link").font(.caption).foregroundStyle(.secondary)
                     TextField("https://www.notion.so/…", text: $parent).textFieldStyle(.roundedBorder).labelsHidden()
                 }
                 Button(working ? "Creating…" : "Create my Calls & Projects databases", action: provision)
