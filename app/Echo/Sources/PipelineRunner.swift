@@ -11,6 +11,14 @@ enum PipelineRunner {
         proc.arguments = [script, "--mic=\(mic.path)", "--system=\(system.path)"]
         proc.currentDirectoryURL = URL(fileURLWithPath: BuildConfig.repoRoot)
 
+        // A Finder-launched app inherits a minimal PATH. Give node the full login
+        // PATH so the tools it spawns by name (ffmpeg, whisper, claude) resolve.
+        var env = ProcessInfo.processInfo.environment
+        if let loginPath = try? loginShellPath(), !loginPath.isEmpty {
+            env["PATH"] = loginPath
+        }
+        proc.environment = env
+
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe
@@ -60,6 +68,19 @@ enum PipelineRunner {
             throw PipelineError.nodeNotFound
         }
         return path
+    }
+
+    /// The user's full login-shell PATH (so child tools spawned by name resolve).
+    private static func loginShellPath() throws -> String {
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        shell.arguments = ["-lc", "printf %s \"$PATH\""]
+        let pipe = Pipe()
+        shell.standardOutput = pipe
+        try shell.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        shell.waitUntilExit()
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 }
 
