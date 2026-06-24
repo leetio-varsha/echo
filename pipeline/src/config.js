@@ -77,6 +77,10 @@ export function loadConfig({ dryRun = false, needWhisper = true } = {}) {
       modelPath: resolveFromRoot(opt("WHISPER_MODEL", "models/ggml-large-v3.bin")),
       lang: whisperLang,
       threads: opt("WHISPER_THREADS"),
+      // Optional silero VAD model. When set, whisper only transcribes detected
+      // speech — this is what kills hallucinations / wrong-language / repetition
+      // loops on quiet or paused audio. Strongly recommended.
+      vadModel: opt("WHISPER_VAD_MODEL") ? resolveFromRoot(opt("WHISPER_VAD_MODEL")) : "",
     },
     summaryLang,
   };

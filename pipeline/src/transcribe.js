@@ -87,6 +87,14 @@ function runWhisper(cfg, wavPath, { json = false } = {}) {
       args.push("-t", String(cfg.whisper.threads));
     }
 
+    // Anti-hallucination: suppress non-speech tokens, and run VAD when a model is
+    // configured so silence/pauses (where whisper invents text, mis-detects the
+    // language, or loops) are skipped entirely.
+    args.push("-sns");
+    if (cfg.whisper.vadModel && fs.existsSync(cfg.whisper.vadModel)) {
+      args.push("--vad", "--vad-model", cfg.whisper.vadModel);
+    }
+
     const proc = spawn(cfg.whisper.binPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
