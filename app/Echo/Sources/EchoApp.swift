@@ -106,6 +106,7 @@ final class AppState: ObservableObject {
 
 @main
 struct EchoApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var state = AppState()
 
     var body: some Scene {
@@ -130,6 +131,7 @@ struct EchoMenu: View {
         .disabled(state.busy)
         Toggle("Auto-detect calls", isOn: $state.autoDetect)
         Divider()
+        Button("Set up Echo…") { SetupWindow.shared.show() }
         Button("Quit Echo") { NSApplication.shared.terminate(nil) }
     }
 }
