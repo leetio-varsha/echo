@@ -32,6 +32,7 @@ swiftc \
   "$SRC"/*.swift
 
 cp "$APP_DIR/Echo/Info.plist" "$APP/Contents/Info.plist"
+cp "$APP_DIR/Echo/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # Prefer a stable self-signed identity so the cdhash-independent designated
 # requirement stays constant across rebuilds → macOS Screen-Recording / Mic TCC

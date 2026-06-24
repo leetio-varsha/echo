@@ -15,7 +15,6 @@ enum CalendarLookup {
     static func currentMeetingJSON() async -> URL? {
         let store = EKEventStore()
         guard await requestAccess(store) else {
-            DebugLog.log("calendar: access not granted")
             return nil
         }
 
@@ -31,7 +30,6 @@ enum CalendarLookup {
             abs($0.startDate.timeIntervalSince(now)) < abs($1.startDate.timeIntervalSince(now))
         }
         guard let event = ongoing ?? nearest else {
-            DebugLog.log("calendar: no event near now")
             return nil
         }
 
@@ -45,7 +43,6 @@ enum CalendarLookup {
         }
 
         let meeting = Meeting(title: event.title ?? "", me: me, attendees: attendees)
-        DebugLog.log("calendar: matched '\(meeting.title)' attendees=\(attendees.count)")
 
         do {
             let url = FileManager.default.temporaryDirectory
@@ -53,7 +50,6 @@ enum CalendarLookup {
             try JSONEncoder().encode(meeting).write(to: url)
             return url
         } catch {
-            DebugLog.log("calendar: write failed \(error.localizedDescription)")
             return nil
         }
     }

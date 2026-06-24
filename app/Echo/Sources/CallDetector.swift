@@ -26,7 +26,6 @@ final class CallDetector {
     private var freeSince: Date?
 
     func start() {
-        DebugLog.log("detector start, myPID=\(myPID)")
         let t = DispatchSource.makeTimerSource(queue: .main)
         t.schedule(deadline: .now() + 1, repeating: pollInterval)
         t.setEventHandler { [weak self] in self?.poll() }
@@ -47,17 +46,14 @@ final class CallDetector {
             freeSince = nil
             if !callActive {
                 callActive = true
-                DebugLog.log("CALL START (mic grabbed by \(others))")
                 onCallStart?()
             }
         } else if callActive {
             if freeSince == nil {
                 freeSince = Date()
-                DebugLog.log("mic free — \(endDebounce)s debounce started")
             } else if Date().timeIntervalSince(freeSince!) >= endDebounce {
                 callActive = false
                 freeSince = nil
-                DebugLog.log("CALL END fired")
                 onCallEnd?()
             }
         }
