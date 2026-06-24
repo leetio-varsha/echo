@@ -35,6 +35,17 @@ Rules:
 
 {{LANGUAGE_INSTRUCTION}}
 
+## Meeting context
+
+This may be provided from the user's calendar (or be empty):
+
+{{MEETING_CONTEXT}}
+
+When present, use it: set `participants` to the real attendee names; attribute action
+items by mapping the "[Me]" speaker to the calendar owner and "[Them]" to the other
+attendee(s); and prefer the calendar event title for `title` unless the conversation
+clearly warrants a more specific one. It may also help identify the project below.
+
 ## Project matching
 
 Here is the list of the user's active projects:

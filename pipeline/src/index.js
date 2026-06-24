@@ -14,12 +14,13 @@ import {
 } from "./notion.js";
 
 function parseArgs(argv) {
-  const args = { dryRun: false, audioPath: null, transcriptPath: null, micPath: null, systemPath: null };
+  const args = { dryRun: false, audioPath: null, transcriptPath: null, micPath: null, systemPath: null, meetingPath: null };
   for (const a of argv) {
     if (a === "--dry-run") args.dryRun = true;
     else if (a.startsWith("--transcript=")) args.transcriptPath = a.slice("--transcript=".length);
     else if (a.startsWith("--mic=")) args.micPath = a.slice("--mic=".length);
     else if (a.startsWith("--system=")) args.systemPath = a.slice("--system=".length);
+    else if (a.startsWith("--meeting-json=")) args.meetingPath = a.slice("--meeting-json=".length);
     else if (!a.startsWith("--")) args.audioPath = a;
   }
   return args;
@@ -38,6 +39,7 @@ Options:
   --mic=FILE           "Me" track (your mic). Use with --system for speaker-labeled notes.
   --system=FILE        "Them" track (system audio). Transcribed separately and merged by time.
   --transcript=FILE    Use a pre-made transcript instead of transcribing audio.
+  --meeting-json=FILE  Calendar context {title, me, attendees[]} to name speakers + set title.
 `);
 }
 
@@ -122,11 +124,22 @@ async function main() {
   }
   const projectNames = projects.map((p) => p.name);
 
+  // Optional calendar context (Phase 4): { title, me, attendees[] }.
+  let meeting = null;
+  if (args.meetingPath) {
+    try {
+      meeting = JSON.parse(fs.readFileSync(args.meetingPath, "utf8"));
+      console.log(`Calendar event: "${meeting.title || "(untitled)"}" (${(meeting.attendees || []).length} attendees).`);
+    } catch (e) {
+      console.warn(`Could not read meeting context (continuing without it): ${e.message}`);
+    }
+  }
+
   // 3. Summarize via Claude (api or subscription CLI).
   console.log(`Summarizing with ${cfg.anthropic.model} via ${cfg.summaryBackend} (lang=${cfg.summaryLang})…`);
   let summary;
   try {
-    summary = await summarize(cfg, { transcript, projectNames });
+    summary = await summarize(cfg, { transcript, projectNames, meeting });
   } catch (e) {
     // Hard rule: a summarization failure must never lose the transcript.
     const hint = preserveTranscript(transcript, args.transcriptPath);

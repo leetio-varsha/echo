@@ -24,7 +24,21 @@ const REQUIRED_KEYS = [
   "suggested_project",
 ];
 
-function buildPrompt({ transcript, summaryLang, projectNames }) {
+/** Render calendar meeting context (title + attendees) for the prompt. */
+function formatMeeting(meeting) {
+  const attendees = Array.isArray(meeting?.attendees) ? meeting.attendees.filter(Boolean) : [];
+  if (!meeting || (!meeting.title && !meeting.me && !attendees.length)) {
+    return "(no calendar event matched this call)";
+  }
+  const lines = [];
+  if (meeting.title) lines.push(`Title: ${meeting.title}`);
+  if (meeting.me) lines.push(`You (the "[Me]" speaker): ${meeting.me}`);
+  const others = attendees.filter((a) => a !== meeting.me);
+  if (others.length) lines.push(`Other attendee(s) (the "[Them]" speaker[s]): ${others.join(", ")}`);
+  return lines.join("\n");
+}
+
+function buildPrompt({ transcript, summaryLang, projectNames, meeting }) {
   const template = fs.readFileSync(PROMPT_PATH, "utf8");
   const projectList =
     projectNames && projectNames.length
@@ -32,6 +46,7 @@ function buildPrompt({ transcript, summaryLang, projectNames }) {
       : "(no projects available — always return null for suggested_project)";
   return template
     .replace("{{LANGUAGE_INSTRUCTION}}", LANGUAGE_INSTRUCTIONS[summaryLang] || LANGUAGE_INSTRUCTIONS.auto)
+    .replace("{{MEETING_CONTEXT}}", formatMeeting(meeting))
     .replace("{{PROJECT_LIST}}", projectList)
     .replace("{{TRANSCRIPT}}", transcript);
 }
@@ -94,8 +109,8 @@ export function parseSummaryResponse(raw) {
  * Summarize a transcript via Claude. In dry-run mode, prints the prompt and
  * returns a stub so the rest of the pipeline can be exercised without an API key.
  */
-export async function summarize(cfg, { transcript, projectNames }) {
-  const prompt = buildPrompt({ transcript, summaryLang: cfg.summaryLang, projectNames });
+export async function summarize(cfg, { transcript, projectNames, meeting }) {
+  const prompt = buildPrompt({ transcript, summaryLang: cfg.summaryLang, projectNames, meeting });
 
   if (cfg.dryRun) {
     console.log(`\n[dry-run] Prompt that would be sent to Claude (backend=${cfg.summaryBackend}):\n`);
