@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
 import { PIPELINE_ROOT } from "./config.js";
 
@@ -96,7 +98,7 @@ export async function summarize(cfg, { transcript, projectNames }) {
   const prompt = buildPrompt({ transcript, summaryLang: cfg.summaryLang, projectNames });
 
   if (cfg.dryRun) {
-    console.log("\n[dry-run] Prompt that would be sent to Claude:\n");
+    console.log(`\n[dry-run] Prompt that would be sent to Claude (backend=${cfg.summaryBackend}):\n`);
     console.log(prompt.slice(0, 1500) + (prompt.length > 1500 ? "\n…[truncated]" : ""));
     return {
       title: "[dry-run] Sample meeting",
@@ -109,19 +111,86 @@ export async function summarize(cfg, { transcript, projectNames }) {
     };
   }
 
+  const raw =
+    cfg.summaryBackend === "api"
+      ? await summarizeViaApi(cfg, prompt)
+      : await summarizeViaClaudeCli(cfg, prompt);
+
+  return parseSummaryResponse(raw);
+}
+
+/** Backend "api": direct Anthropic API call. Metered — needs ANTHROPIC_API_KEY. */
+async function summarizeViaApi(cfg, prompt) {
   const client = new Anthropic({ apiKey: cfg.anthropic.apiKey });
   const msg = await client.messages.create({
     model: cfg.anthropic.model,
     max_tokens: 4096,
     messages: [{ role: "user", content: prompt }],
   });
-
-  const raw = msg.content
+  return msg.content
     .filter((b) => b.type === "text")
     .map((b) => b.text)
     .join("\n");
+}
 
-  return parseSummaryResponse(raw);
+/**
+ * Backend "claude-cli": shell out to the `claude` CLI in headless print mode.
+ * Reuses this machine's Claude Code login (subscription) — no API key, no
+ * metered billing. We run in a neutral cwd so no project CLAUDE.md/context is
+ * loaded, and strip ANTHROPIC_API_KEY from the child env so the CLI cannot
+ * silently fall back to metered API billing.
+ *
+ * The CLI returns a JSON envelope; the model's text is in its `result` field,
+ * which we hand to the same defensive parser used by the API backend.
+ */
+function summarizeViaClaudeCli(cfg, prompt) {
+  return new Promise((resolve, reject) => {
+    const args = ["-p", "--output-format", "json", "--model", cfg.anthropic.model];
+    const env = { ...process.env };
+    delete env.ANTHROPIC_API_KEY;
+
+    const child = spawn(cfg.anthropic.claudeCliPath, args, {
+      cwd: os.tmpdir(),
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d.toString()));
+    child.stderr.on("data", (d) => (err += d.toString()));
+    child.on("error", (e) =>
+      reject(
+        new Error(
+          `Failed to launch Claude CLI ("${cfg.anthropic.claudeCliPath}"): ${e.message}. ` +
+            `Install & log in to Claude Code, set CLAUDE_CLI_PATH, or use SUMMARY_BACKEND=api.`,
+        ),
+      ),
+    );
+    child.on("close", (code) => {
+      if (code !== 0) {
+        return reject(new Error(`Claude CLI exited ${code}: ${(err || out).trim().slice(-2000)}`));
+      }
+      let envelope;
+      try {
+        envelope = JSON.parse(out);
+      } catch (e) {
+        return reject(new Error(`Claude CLI did not return JSON (${e.message}):\n${out.slice(0, 500)}`));
+      }
+      if (envelope.is_error || envelope.subtype !== "success") {
+        return reject(
+          new Error(
+            `Claude CLI reported an error: ${envelope.subtype || "unknown"} ${envelope.result || ""}`.trim(),
+          ),
+        );
+      }
+      resolve(typeof envelope.result === "string" ? envelope.result : "");
+    });
+
+    child.stdin.on("error", () => {}); // ignore EPIPE if the CLI exits early
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
 }
 
 // --- self-test: validate parsing against tricky sample responses ---

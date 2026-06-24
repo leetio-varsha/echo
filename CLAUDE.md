@@ -15,6 +15,10 @@ transcript is sent to the Claude API.
 Node ≥20 (ESM) · `@anthropic-ai/sdk` (`claude-sonnet-4-6`) · `@notionhq/client` · `dotenv` ·
 whisper.cpp (Metal, `ggml-large-v3`) · `ffmpeg` (audio → 16 kHz mono WAV).
 
+**Summary backend** (`SUMMARY_BACKEND`): `claude-cli` (default) shells out to the `claude`
+CLI in headless mode → reuses this machine's Claude Code login (subscription), no API key /
+no metered billing; `api` uses the SDK and needs `ANTHROPIC_API_KEY`. See `summarize.js`.
+
 ## Verify your work
 ```
 cd pipeline && npm run check          # node --check on all src files
@@ -49,4 +53,4 @@ A task is DONE only when the **Definition of Done** in `memory/rules/execution.m
 ## Status
 Phase 0 ✅ · Phase 1 ✅ (pipeline, verified) · Phase 2 ⬜ native app · Phase 3 ⬜ auto-detect ·
 Phase 4 ⬜ Calendar enrichment. Live run still needs: Notion integration + shared DBs,
-`ANTHROPIC_API_KEY`, whisper.cpp build + `ggml-large-v3`.
+whisper.cpp build + `ggml-large-v3` (and `ANTHROPIC_API_KEY` only if `SUMMARY_BACKEND=api`).

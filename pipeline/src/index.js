@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
 import { loadConfig } from "./config.js";
 import { transcribe } from "./transcribe.js";
 import { summarize } from "./summarize.js";
@@ -33,6 +36,24 @@ Options:
 `);
 }
 
+/**
+ * Make sure a transcript is never lost when a later step fails. If it came from
+ * a file it is already safe; otherwise dump it to a temp file and return a hint
+ * telling the user how to resume from it.
+ */
+function preserveTranscript(transcript, transcriptPath) {
+  if (transcriptPath) {
+    return `Transcript is safe at: ${transcriptPath}\nRe-run with: node src/index.js --transcript="${transcriptPath}"`;
+  }
+  try {
+    const out = path.join(os.tmpdir(), `echo-transcript-${crypto.randomBytes(6).toString("hex")}.txt`);
+    fs.writeFileSync(out, transcript, "utf8");
+    return `Transcript preserved at: ${out}\nRe-run with: node src/index.js --transcript="${out}"`;
+  } catch (e) {
+    return `(could not preserve transcript to disk: ${e.message})`;
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
@@ -41,7 +62,8 @@ async function main() {
     process.exit(1);
   }
 
-  const cfg = loadConfig({ dryRun: args.dryRun });
+  // whisper is only needed when transcribing audio (not when a transcript is given).
+  const cfg = loadConfig({ dryRun: args.dryRun, needWhisper: !args.transcriptPath });
 
   // 1. Transcript (from whisper, or a provided file).
   let transcript;
@@ -76,9 +98,16 @@ async function main() {
   }
   const projectNames = projects.map((p) => p.name);
 
-  // 3. Summarize via Claude.
-  console.log(`Summarizing with ${cfg.anthropic.model} (lang=${cfg.summaryLang})…`);
-  const summary = await summarize(cfg, { transcript, projectNames });
+  // 3. Summarize via Claude (api or subscription CLI).
+  console.log(`Summarizing with ${cfg.anthropic.model} via ${cfg.summaryBackend} (lang=${cfg.summaryLang})…`);
+  let summary;
+  try {
+    summary = await summarize(cfg, { transcript, projectNames });
+  } catch (e) {
+    // Hard rule: a summarization failure must never lose the transcript.
+    const hint = preserveTranscript(transcript, args.transcriptPath);
+    throw new Error(`Summarization failed: ${e.message}\n${hint}`);
+  }
   console.log(`Title: ${summary.title}`);
   console.log(
     `  decisions=${summary.decisions.length} actions=${summary.action_items.length} questions=${summary.open_questions.length} participants=[${summary.participants.join(", ")}]`,

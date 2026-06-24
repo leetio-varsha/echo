@@ -37,10 +37,20 @@ The database IDs are already filled in `.env.example`:
 (If sharing fails or the API rejects `database_id`, your workspace may require the
 newer data-source API — see "Notion API note" below.)
 
-### 2. Anthropic API key
+### 2. Claude access (pick one)
 
-Get a key at <https://console.anthropic.com/> → `ANTHROPIC_API_KEY`.
-Default model is `claude-sonnet-4-6`.
+Two ways to call Claude for the summary, chosen by `SUMMARY_BACKEND`:
+
+- **`claude-cli` (default)** — reuses your local Claude Code login (subscription).
+  No API key, no per-token billing. Just have the `claude` CLI installed and
+  logged in (`claude` on `PATH`, or set `CLAUDE_CLI_PATH`). The pipeline calls it
+  headless in a neutral dir and strips `ANTHROPIC_API_KEY` so it can't silently
+  bill the API.
+- **`api`** — direct Anthropic API. Get a key at
+  <https://console.anthropic.com/> → set `ANTHROPIC_API_KEY` and
+  `SUMMARY_BACKEND=api`. Metered.
+
+Default model is `claude-sonnet-4-6` either way.
 
 ### 3. whisper.cpp (local transcription, Metal)
 
@@ -69,7 +79,8 @@ Point `WHISPER_CPP_PATH` at the `whisper-cli` binary, and `WHISPER_MODEL` at the
 ```bash
 cd pipeline
 cp .env.example .env
-# edit .env: ANTHROPIC_API_KEY, NOTION_TOKEN, WHISPER_CPP_PATH, WHISPER_MODEL
+# edit .env: NOTION_TOKEN, WHISPER_CPP_PATH, WHISPER_MODEL
+#   (default SUMMARY_BACKEND=claude-cli needs no key; set ANTHROPIC_API_KEY only for SUMMARY_BACKEND=api)
 npm install
 ```
 
@@ -97,6 +108,8 @@ Decisions, Action items (as to-do checkboxes), Open questions, and the full
 transcript inside a collapsed toggle.
 
 Configuration knobs (`.env`):
+- `SUMMARY_BACKEND` — `claude-cli` (default, uses your Claude Code subscription) or `api`.
+- `CLAUDE_CLI_PATH` — path to the `claude` binary if it isn't on `PATH` (claude-cli backend).
 - `SUMMARY_LANG` — `auto` (match the meeting), or force `ru` / `uk` / `en`.
 - `WHISPER_LANG` — `auto`, or force `ru` / `uk` / `en`.
 
