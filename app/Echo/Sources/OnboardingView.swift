@@ -30,8 +30,14 @@ struct OnboardingView: View {
             Section("Notion") {
                 Text("Create a page in Notion, share it with your Echo integration, then paste the page link here. Echo will create the Calls + Projects databases for you.")
                     .font(.caption).foregroundStyle(.secondary)
-                SecureField("Integration token (ntn_…)", text: $token)
-                TextField("Parent page URL", text: $parent)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Integration token").font(.caption).foregroundStyle(.secondary)
+                    SecureField("ntn_…", text: $token).textFieldStyle(.roundedBorder).labelsHidden()
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Parent page URL").font(.caption).foregroundStyle(.secondary)
+                    TextField("https://www.notion.so/…", text: $parent).textFieldStyle(.roundedBorder).labelsHidden()
+                }
                 Button(working ? "Creating…" : "Create my Calls & Projects databases", action: provision)
                     .disabled(working || token.isEmpty || parent.isEmpty)
                 if !status.isEmpty { Text(status).font(.caption) }
@@ -44,7 +50,7 @@ struct OnboardingView: View {
                 } else {
                     Text("No Claude Code subscription detected — paste an Anthropic API key instead.")
                         .font(.caption).foregroundStyle(.secondary)
-                    SecureField("ANTHROPIC_API_KEY", text: $apiKey)
+                    SecureField("sk-ant-…", text: $apiKey).textFieldStyle(.roundedBorder).labelsHidden()
                     Button("Save key") {
                         Setup.writeEnv(["SUMMARY_BACKEND": "api", "ANTHROPIC_API_KEY": apiKey])
                         recheck()

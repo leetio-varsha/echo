@@ -23,10 +23,15 @@ final class SetupWindow: NSObject, NSWindowDelegate {
             w.center()
             window = w
         }
-        NSApp.setActivationPolicy(.regular)      // become a normal app so the window can be key
-        NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
-        window?.orderFrontRegardless()
+        // Defer past the menu's dismissal — if we grab key focus while the menu is
+        // still closing, an accessory app loses it again and the fields stay dead.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            NSApp.setActivationPolicy(.regular)  // normal app so the window can be key
+            NSApp.activate(ignoringOtherApps: true)
+            guard let w = self.window else { return }
+            w.makeKeyAndOrderFront(nil)
+            w.orderFrontRegardless()
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
