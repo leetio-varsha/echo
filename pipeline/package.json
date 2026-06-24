@@ -10,7 +10,9 @@
   "scripts": {
     "start": "node src/index.js",
     "check": "for f in src/*.js; do node --check \"$f\" || exit 1; done; echo 'syntax ok'",
-    "test:parse": "node src/summarize.js --self-test"
+    "test:parse": "node src/summarize.js --self-test",
+    "test:merge": "node src/transcribe.js --self-test",
+    "test": "npm run test:parse && npm run test:merge"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { loadConfig } from "./config.js";
-import { transcribe } from "./transcribe.js";
+import { transcribe, transcribeSegments, mergeTracks } from "./transcribe.js";
 import { summarize } from "./summarize.js";
 import {
   createCallPage,
@@ -14,10 +14,12 @@ import {
 } from "./notion.js";
 
 function parseArgs(argv) {
-  const args = { dryRun: false, audioPath: null, transcriptPath: null };
+  const args = { dryRun: false, audioPath: null, transcriptPath: null, micPath: null, systemPath: null };
   for (const a of argv) {
     if (a === "--dry-run") args.dryRun = true;
     else if (a.startsWith("--transcript=")) args.transcriptPath = a.slice("--transcript=".length);
+    else if (a.startsWith("--mic=")) args.micPath = a.slice("--mic=".length);
+    else if (a.startsWith("--system=")) args.systemPath = a.slice("--system=".length);
     else if (!a.startsWith("--")) args.audioPath = a;
   }
   return args;
@@ -28,10 +30,13 @@ function usage() {
 
 Usage:
   node src/index.js <path-to-audio> [--dry-run]
-  node src/index.js --transcript=<path-to-txt> [--dry-run]   # skip whisper, use existing transcript
+  node src/index.js --mic=<me.wav> --system=<them.wav> [--dry-run]   # two-track Me/Them
+  node src/index.js --transcript=<path-to-txt> [--dry-run]          # skip whisper, use existing transcript
 
 Options:
   --dry-run            Don't call Claude or write to Notion; print what would happen.
+  --mic=FILE           "Me" track (your mic). Use with --system for speaker-labeled notes.
+  --system=FILE        "Them" track (system audio). Transcribed separately and merged by time.
   --transcript=FILE    Use a pre-made transcript instead of transcribing audio.
 `);
 }
@@ -57,7 +62,8 @@ function preserveTranscript(transcript, transcriptPath) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (!args.audioPath && !args.transcriptPath) {
+  const twoTrack = Boolean(args.micPath || args.systemPath);
+  if (!args.audioPath && !args.transcriptPath && !twoTrack) {
     usage();
     process.exit(1);
   }
@@ -77,6 +83,24 @@ async function main() {
       recordedAt = fs.statSync(args.transcriptPath).mtime;
     } catch {}
     console.log(`Loaded transcript (${transcript.length} chars) from ${args.transcriptPath}`);
+  } else if (twoTrack) {
+    if (!args.micPath || !args.systemPath) {
+      throw new Error("Two-track mode needs both --mic=<me.wav> and --system=<them.wav>.");
+    }
+    console.log("Transcribing two tracks with whisper.cpp (Me + Them)…");
+    const meSegs = await transcribeSegments(cfg, args.micPath);
+    const themSegs = await transcribeSegments(cfg, args.systemPath);
+    transcript = mergeTracks([
+      { label: "Me", segments: meSegs },
+      { label: "Them", segments: themSegs },
+    ]);
+    if (!transcript.trim()) throw new Error("Both tracks transcribed empty.");
+    try {
+      recordedAt = fs.statSync(args.micPath).mtime;
+    } catch {}
+    console.log(
+      `Merged transcript ready (${transcript.length} chars; Me=${meSegs.length} seg, Them=${themSegs.length} seg).`,
+    );
   } else {
     console.log(`Transcribing ${args.audioPath} with whisper.cpp…`);
     transcript = await transcribe(cfg, args.audioPath);

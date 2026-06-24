@@ -41,10 +41,31 @@ function toWav16k(inputPath) {
 }
 
 /**
- * Run whisper.cpp on a WAV file and return the transcript text.
- * We ask whisper to write a plain .txt next to a temp output prefix and read it.
+ * Parse whisper.cpp `-oj` JSON into [{ start, end, text }] (offsets in ms).
+ * Defensive: tolerates missing fields and drops empty segments.
  */
-function runWhisper(cfg, wavPath) {
+export function parseWhisperSegments(raw) {
+  let parsed;
+  try {
+    parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch (e) {
+    throw new Error(`whisper JSON parse failed: ${e.message}`);
+  }
+  const arr = Array.isArray(parsed?.transcription) ? parsed.transcription : [];
+  return arr
+    .map((s) => ({
+      start: Number(s?.offsets?.from ?? 0),
+      end: Number(s?.offsets?.to ?? 0),
+      text: (s?.text ?? "").trim(),
+    }))
+    .filter((s) => s.text);
+}
+
+/**
+ * Run whisper.cpp on a WAV file. mode "txt" returns the transcript string;
+ * mode "json" returns timestamped segments [{ start, end, text }].
+ */
+function runWhisper(cfg, wavPath, { json = false } = {}) {
   return new Promise((resolve, reject) => {
     const outPrefix = path.join(
       os.tmpdir(),
@@ -56,16 +77,12 @@ function runWhisper(cfg, wavPath) {
       cfg.whisper.modelPath,
       "-f",
       wavPath,
-      "-otxt",
+      json ? "-oj" : "-otxt",
       "-of",
       outPrefix,
       "-np", // no prints / progress noise
     ];
-    if (cfg.whisper.lang && cfg.whisper.lang !== "auto") {
-      args.push("-l", cfg.whisper.lang);
-    } else {
-      args.push("-l", "auto");
-    }
+    args.push("-l", cfg.whisper.lang && cfg.whisper.lang !== "auto" ? cfg.whisper.lang : "auto");
     if (cfg.whisper.threads) {
       args.push("-t", String(cfg.whisper.threads));
     }
@@ -80,20 +97,24 @@ function runWhisper(cfg, wavPath) {
       reject(new Error(`Failed to launch whisper.cpp at "${cfg.whisper.binPath}": ${err.message}`)),
     );
     proc.on("close", (code) => {
-      const txtPath = `${outPrefix}.txt`;
+      const outPath = `${outPrefix}.${json ? "json" : "txt"}`;
       if (code !== 0) {
         return reject(new Error(`whisper.cpp exited ${code}:\n${stderr.slice(-2000)}`));
       }
-      if (!fs.existsSync(txtPath)) {
+      if (!fs.existsSync(outPath)) {
         return reject(
-          new Error(`whisper.cpp produced no transcript file at ${txtPath}.\n${stderr.slice(-2000)}`),
+          new Error(`whisper.cpp produced no output at ${outPath}.\n${stderr.slice(-2000)}`),
         );
       }
-      const text = fs.readFileSync(txtPath, "utf8").trim();
+      const raw = fs.readFileSync(outPath, "utf8");
       try {
-        fs.unlinkSync(txtPath);
+        fs.unlinkSync(outPath);
       } catch {}
-      resolve(text);
+      try {
+        resolve(json ? parseWhisperSegments(raw) : raw.trim());
+      } catch (e) {
+        reject(e);
+      }
     });
   });
 }
@@ -108,7 +129,7 @@ export async function transcribe(cfg, audioPath) {
   }
   const wav = await toWav16k(audioPath);
   try {
-    const text = await runWhisper(cfg, wav);
+    const text = await runWhisper(cfg, wav, { json: false });
     if (!text) throw new Error("Transcription came back empty.");
     return text;
   } finally {
@@ -116,4 +137,86 @@ export async function transcribe(cfg, audioPath) {
       fs.unlinkSync(wav);
     } catch {}
   }
+}
+
+/**
+ * Transcribe an audio file into timestamped segments (for two-track merging).
+ * Returns [] for silence rather than throwing, so a quiet track degrades gracefully.
+ * @returns {Promise<Array<{start:number,end:number,text:string}>>}
+ */
+export async function transcribeSegments(cfg, audioPath) {
+  if (!fs.existsSync(audioPath)) {
+    throw new Error(`Audio file not found: ${audioPath}`);
+  }
+  const wav = await toWav16k(audioPath);
+  try {
+    return await runWhisper(cfg, wav, { json: true });
+  } finally {
+    try {
+      fs.unlinkSync(wav);
+    } catch {}
+  }
+}
+
+/**
+ * Interleave labeled tracks into a single speaker-tagged transcript, ordered by
+ * time. Consecutive segments from the same speaker are merged into one line.
+ * @param {Array<{label:string, segments:Array<{start:number,end:number,text:string}>}>} tracks
+ * @returns {string} e.g. "[Me] ...\n[Them] ...\n[Me] ..."
+ */
+export function mergeTracks(tracks) {
+  const all = [];
+  for (const t of tracks || []) {
+    for (const s of t.segments || []) all.push({ ...s, label: t.label });
+  }
+  // Sort by start time; ties broken by label for stable output.
+  all.sort((a, b) => a.start - b.start || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+
+  const lines = [];
+  let cur = null;
+  for (const seg of all) {
+    if (cur && cur.label === seg.label) {
+      cur.text += " " + seg.text;
+    } else {
+      if (cur) lines.push(`[${cur.label}] ${cur.text}`);
+      cur = { label: seg.label, text: seg.text };
+    }
+  }
+  if (cur) lines.push(`[${cur.label}] ${cur.text}`);
+  return lines.join("\n");
+}
+
+// --- self-test: whisper-JSON parsing + track merging (no whisper binary needed) ---
+if (process.argv[1] && process.argv[1].endsWith("transcribe.js") && process.argv.includes("--self-test")) {
+  let ok = true;
+  const eq = (c, m) => {
+    if (!c) { ok = false; console.error("FAIL:", m); } else console.log("ok:", m);
+  };
+
+  const segs = parseWhisperSegments(
+    JSON.stringify({
+      transcription: [
+        { offsets: { from: 0, to: 1500 }, text: " Привет." },
+        { offsets: { from: 1500, to: 3000 }, text: " Как дела?" },
+        { text: "   " }, // empty -> dropped
+        { offsets: { from: 3000, to: 4000 } }, // no text -> dropped
+      ],
+    }),
+  );
+  eq(segs.length === 2, "parseWhisperSegments drops empty/missing-text segments");
+  eq(segs[0].start === 0 && segs[0].end === 1500 && segs[0].text === "Привет.", "segment parsed + trimmed");
+  eq(parseWhisperSegments(JSON.stringify({})).length === 0, "missing transcription -> []");
+
+  const merged = mergeTracks([
+    { label: "Me", segments: [{ start: 0, end: 1000, text: "Давай зафиналим." }, { start: 4000, end: 5000, text: "Я напишу пресс-релиз." }] },
+    { label: "Them", segments: [{ start: 1200, end: 2000, text: "Окей." }, { start: 2100, end: 3000, text: "Закончу интеграцию." }] },
+  ]);
+  eq(
+    merged === ["[Me] Давай зафиналим.", "[Them] Окей. Закончу интеграцию.", "[Me] Я напишу пресс-релиз."].join("\n"),
+    "mergeTracks interleaves by time and groups consecutive speaker turns",
+  );
+  eq(mergeTracks([]) === "", "mergeTracks([]) -> ''");
+
+  console.log(ok ? "\ntranscribe self-test: PASS" : "\ntranscribe self-test: FAIL");
+  process.exit(ok ? 0 : 1);
 }
