@@ -91,6 +91,11 @@ function runWhisper(cfg, wavPath, { json = false } = {}) {
     // configured so silence/pauses (where whisper invents text, mis-detects the
     // language, or loops) are skipped entirely.
     args.push("-sns");
+    // Cap text context carried between segments: unbounded context lets whisper
+    // get stuck in repetition loops over a long file; 0 kills loops but hurts
+    // accuracy (loses cross-segment context). 128 is the sweet spot — loops
+    // shrink dramatically and the transcript recovers, with quality intact.
+    args.push("-mc", "128");
     if (cfg.whisper.vadModel && fs.existsSync(cfg.whisper.vadModel)) {
       args.push("--vad", "--vad-model", cfg.whisper.vadModel);
     }
