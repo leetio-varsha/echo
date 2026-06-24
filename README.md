@@ -23,6 +23,27 @@ App build/run: [`app/README.md`](app/README.md). Architecture & onboarding:
 
 ---
 
+## Quick start — set up on your own Mac
+
+```bash
+git clone <repo> && cd echo
+./bootstrap.sh           # deps + whisper.cpp + models + self-signed cert + app build
+open app/build/Echo.app  # finish in the "Set up Echo…" window
+```
+`bootstrap.sh` does everything heavy (Homebrew deps, whisper.cpp + `large-v3` + VAD,
+`npm install`, a code-signing identity, the app build). Then the app's **onboarding
+window** collects the rest: paste your Notion integration token + a shared parent-page
+link → it **creates your Calls + Projects databases**; Claude uses your Claude Code
+subscription automatically (or paste an API key). Grant Microphone, Screen Recording,
+and Calendar when prompted.
+
+> Notion integration: <https://www.notion.so/my-integrations> → create one, then create a
+> page, share it with the integration, and paste that page's link in onboarding.
+
+The sections below document the same steps **manually** (and the pipeline-only path).
+
+---
+
 ## Phase 1 setup (one-time)
 
 ### 1. Notion integration
