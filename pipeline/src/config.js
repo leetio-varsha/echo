@@ -71,6 +71,8 @@ export function loadConfig({ dryRun = false, needWhisper = true } = {}) {
       token: dryRun ? opt("NOTION_TOKEN") : req("NOTION_TOKEN"),
       callsDbId: req("NOTION_CALLS_DB_ID"),
       projectsDbId: req("NOTION_PROJECTS_DB_ID"),
+      // Projects whose Status equals this are treated as archived and skipped.
+      projectDoneStatus: opt("PROJECT_DONE_STATUS", "Завершён"),
     },
     whisper: {
       binPath: requireWhisper ? req("WHISPER_CPP_PATH") : opt("WHISPER_CPP_PATH"),

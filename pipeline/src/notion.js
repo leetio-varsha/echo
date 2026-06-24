@@ -95,7 +95,7 @@ export function buildBlocks(summary, transcript) {
  * Fetch active projects from the Projects DB.
  * Returns [{ id, name }]. We filter client-side on Status to avoid schema coupling.
  */
-export async function fetchActiveProjects(client, projectsDbId) {
+export async function fetchActiveProjects(client, projectsDbId, doneStatus = "Завершён") {
   const results = [];
   let cursor;
   do {
@@ -110,8 +110,8 @@ export async function fetchActiveProjects(client, projectsDbId) {
       const name = (titleProp?.title || []).map((t) => t.plain_text).join("").trim();
       const status = props.Status?.select?.name || "";
       if (!name) continue;
-      // Keep active + paused; skip clearly-archived ("Завершён") to reduce noise.
-      if (status === "Завершён") continue;
+      // Keep active + paused; skip clearly-archived (PROJECT_DONE_STATUS) to reduce noise.
+      if (status === doneStatus) continue;
       results.push({ id: page.id, name });
     }
     cursor = resp.has_more ? resp.next_cursor : undefined;

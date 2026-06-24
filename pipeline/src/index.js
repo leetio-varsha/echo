@@ -136,7 +136,7 @@ async function main() {
   let projects = [];
   if (!cfg.dryRun || cfg.notion.token) {
     try {
-      projects = await fetchActiveProjects(makeClient(cfg), cfg.notion.projectsDbId);
+      projects = await fetchActiveProjects(makeClient(cfg), cfg.notion.projectsDbId, cfg.notion.projectDoneStatus);
       console.log(`Found ${projects.length} active projects for matching.`);
     } catch (e) {
       console.warn(`Could not fetch projects (continuing without auto-attach): ${e.message}`);
