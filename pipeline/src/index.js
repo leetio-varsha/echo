@@ -61,6 +61,13 @@ function preserveTranscript(transcript, transcriptPath) {
   }
 }
 
+/** Label for the "[Them]" track: the single other attendee's name if known, else "Them". */
+function otherAttendeeLabel(meeting) {
+  const attendees = Array.isArray(meeting?.attendees) ? meeting.attendees.filter(Boolean) : [];
+  const others = attendees.filter((a) => a !== meeting?.me);
+  return others.length === 1 ? others[0] : "Them";
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
@@ -72,6 +79,19 @@ async function main() {
 
   // whisper is only needed when transcribing audio (not when a transcript is given).
   const cfg = loadConfig({ dryRun: args.dryRun, needWhisper: !args.transcriptPath });
+
+  // Optional calendar context (Phase 4): { title, me, attendees[] }. Read early so the
+  // other attendee's name can label the "[Them]" track in the transcript itself.
+  let meeting = null;
+  if (args.meetingPath) {
+    try {
+      meeting = JSON.parse(fs.readFileSync(args.meetingPath, "utf8"));
+      console.log(`Calendar event: "${meeting.title || "(untitled)"}" (${(meeting.attendees || []).length} attendees).`);
+    } catch (e) {
+      console.warn(`Could not read meeting context (continuing without it): ${e.message}`);
+    }
+  }
+  const themLabel = otherAttendeeLabel(meeting);
 
   // 1. Transcript (from whisper, or a provided file).
   let transcript;
@@ -89,12 +109,12 @@ async function main() {
     if (!args.micPath || !args.systemPath) {
       throw new Error("Two-track mode needs both --mic=<me.wav> and --system=<them.wav>.");
     }
-    console.log("Transcribing two tracks with whisper.cpp (Me + Them)…");
+    console.log(`Transcribing two tracks with whisper.cpp (Me + ${themLabel})…`);
     const meSegs = await transcribeSegments(cfg, args.micPath);
     const themSegs = await transcribeSegments(cfg, args.systemPath);
     transcript = mergeTracks([
       { label: "Me", segments: meSegs },
-      { label: "Them", segments: themSegs },
+      { label: themLabel, segments: themSegs },
     ]);
     if (!transcript.trim()) throw new Error("Both tracks transcribed empty.");
     try {
@@ -123,17 +143,6 @@ async function main() {
     }
   }
   const projectNames = projects.map((p) => p.name);
-
-  // Optional calendar context (Phase 4): { title, me, attendees[] }.
-  let meeting = null;
-  if (args.meetingPath) {
-    try {
-      meeting = JSON.parse(fs.readFileSync(args.meetingPath, "utf8"));
-      console.log(`Calendar event: "${meeting.title || "(untitled)"}" (${(meeting.attendees || []).length} attendees).`);
-    } catch (e) {
-      console.warn(`Could not read meeting context (continuing without it): ${e.message}`);
-    }
-  }
 
   // 3. Summarize via Claude (api or subscription CLI).
   console.log(`Summarizing with ${cfg.anthropic.model} via ${cfg.summaryBackend} (lang=${cfg.summaryLang})…`);
