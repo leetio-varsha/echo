@@ -2,34 +2,55 @@ import SwiftUI
 import AppKit
 import UserNotifications
 
-/// Drives the menu-bar UI and orchestrates record → pipeline.
+/// Drives the menu-bar UI and orchestrates record → pipeline, manually or
+/// automatically (auto-detect a call, then auto-stop + summarize when it ends).
 @MainActor
 final class AppState: ObservableObject {
     @Published var isRecording = false
     @Published var busy = false
     @Published var status = "Idle"
+    @Published var autoDetect = true
 
     private let recorder = TwoTrackRecorder()
+    private let detector = CallDetector()
+    private var startedAt: Date?
+    private let minDuration: TimeInterval = 15 // discard accidental short mic blips
 
     var menuIcon: String { isRecording ? "record.circle.fill" : "waveform" }
 
     init() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-    }
 
-    func toggle() {
-        Task {
-            if isRecording { await stop() } else { await start() }
+        detector.onCallStart = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.autoDetect, !self.isRecording, !self.busy else { return }
+                await self.start(auto: true)
+            }
         }
+        detector.onCallEnd = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.isRecording else { return }
+                await self.stop()
+            }
+        }
+        detector.start()
     }
 
-    private func start() async {
-        status = "Requesting permissions…"
+    func toggleRecording() {
+        Task { if isRecording { await stop() } else { await start(auto: false) } }
+    }
+
+    private func start(auto: Bool) async {
+        status = auto ? "Call detected — recording…" : "Requesting permissions…"
         do {
             try await recorder.requestPermissions()
             try await recorder.start()
             isRecording = true
-            status = "Recording…"
+            startedAt = Date()
+            status = auto ? "Recording (auto)…" : "Recording…"
+            if auto {
+                notify(title: "Echo — recording a call", body: "Auto-detected. Stop anytime from the menu.")
+            }
         } catch {
             isRecording = false
             status = "Error: \(error.localizedDescription)"
@@ -38,9 +59,18 @@ final class AppState: ObservableObject {
 
     private func stop() async {
         isRecording = false
+        let elapsed = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+        startedAt = nil
+        let out = await recorder.stop()
+
+        if elapsed < minDuration {
+            status = "Ignored short session (\(Int(elapsed))s)"
+            discard(out)
+            return
+        }
+
         busy = true
         status = "Transcribing & summarizing…"
-        let out = await recorder.stop()
         do {
             let url = try await Task.detached {
                 try PipelineRunner.run(mic: out.mic, system: out.system)
@@ -52,6 +82,12 @@ final class AppState: ObservableObject {
             notify(title: "Echo — failed", body: error.localizedDescription)
         }
         busy = false
+    }
+
+    /// Drop a too-short session: remove its temp recording dir, summarize nothing.
+    private func discard(_ out: TwoTrackRecorder.Output) {
+        let dir = out.mic.deletingLastPathComponent()
+        try? FileManager.default.removeItem(at: dir)
     }
 
     private func notify(title: String, body: String) {
@@ -84,9 +120,10 @@ struct EchoMenu: View {
         Text("Echo — \(state.status)")
         Divider()
         Button(state.isRecording ? "Stop & Summarize" : "Start Recording") {
-            state.toggle()
+            state.toggleRecording()
         }
         .disabled(state.busy)
+        Toggle("Auto-detect calls", isOn: $state.autoDetect)
         Divider()
         Button("Quit Echo") { NSApplication.shared.terminate(nil) }
     }
