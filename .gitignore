@@ -16,6 +16,10 @@ samples/*
 node_modules/
 npm-debug.log*
 
+# native app: build output + machine-specific generated source
+app/build/
+app/Echo/Sources/Generated.swift
+
 # os / editor
 .DS_Store
 *.log
