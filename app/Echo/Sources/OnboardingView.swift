@@ -10,6 +10,7 @@ struct OnboardingView: View {
     @State private var working = false
     @State private var checks = Setup.checks()
     @State private var hasSub = Setup.hasClaudeSubscription()
+    @State private var lastChecked = ""
 
     var body: some View {
         Form {
@@ -18,7 +19,12 @@ struct OnboardingView: View {
                     Label(c.name, systemImage: c.ok ? "checkmark.circle.fill" : "xmark.circle")
                         .foregroundStyle(c.ok ? Color.green : Color.secondary)
                 }
-                Button("Re-check", action: recheck)
+                HStack {
+                    Button("Re-check", action: recheck)
+                    if !lastChecked.isEmpty {
+                        Text("checked \(lastChecked)").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Section("Notion") {
@@ -54,6 +60,7 @@ struct OnboardingView: View {
     private func recheck() {
         checks = Setup.checks()
         hasSub = Setup.hasClaudeSubscription()
+        lastChecked = Date().formatted(date: .omitted, time: .standard)
     }
 
     private func provision() {
