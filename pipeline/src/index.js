@@ -13,6 +13,10 @@ import {
   makeClient,
 } from "./notion.js";
 
+// Distinct exit code for "recording had no speech" (vs 1 = real failure). The
+// menu-bar app treats this as a benign no-op (discard, no notification).
+const EXIT_EMPTY_RECORDING = 20;
+
 function parseArgs(argv) {
   const args = { dryRun: false, audioPath: null, transcriptPath: null, micPath: null, systemPath: null, meetingPath: null };
   for (const a of argv) {
@@ -116,7 +120,14 @@ async function main() {
       { label: "Me", segments: meSegs },
       { label: themLabel, segments: themSegs },
     ]);
-    if (!transcript.trim()) throw new Error("Both tracks transcribed empty.");
+    if (!transcript.trim()) {
+      // No speech on either track — this is a false-positive "call" (a background
+      // app briefly held the mic), not a failure. Nothing to summarize and no
+      // transcript to lose. Exit with a distinct code so the app discards the
+      // session quietly instead of surfacing a scary ❌ failure notification.
+      console.log("No speech detected on either track — nothing to summarize (skipping).");
+      process.exit(EXIT_EMPTY_RECORDING);
+    }
     try {
       recordedAt = fs.statSync(args.micPath).mtime;
     } catch {}
