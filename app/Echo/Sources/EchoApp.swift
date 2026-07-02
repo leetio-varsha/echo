@@ -82,6 +82,11 @@ final class AppState: ObservableObject {
             }.value
             status = "Done ✓"
             notify(title: "Echo — note created", body: url)
+        } catch PipelineError.emptyRecording {
+            // No speech on either track — a false-positive "call" (some app briefly
+            // held the mic). Nothing to summarize: discard quietly, no notification.
+            status = "No speech — ignored"
+            discard(out)
         } catch {
             status = "Error: \(error.localizedDescription)"
             notify(title: "Echo — failed", body: error.localizedDescription)

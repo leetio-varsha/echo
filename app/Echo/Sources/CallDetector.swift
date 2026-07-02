@@ -46,6 +46,10 @@ final class CallDetector {
             freeSince = nil
             if !callActive {
                 callActive = true
+                // Log which process triggered the detection so false-positive "calls"
+                // (a background app grabbing the mic) can be traced in Console.app.
+                let who = others.map { "\(processName($0))(\($0))" }.joined(separator: ", ")
+                NSLog("Echo: call auto-detected — mic held by: \(who)")
                 onCallStart?()
             }
         } else if callActive {
