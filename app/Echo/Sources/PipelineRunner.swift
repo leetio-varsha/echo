@@ -42,6 +42,12 @@ enum PipelineRunner {
         let out = String(data: outData, encoding: .utf8) ?? ""
         errLock.lock(); let err = String(data: errData, encoding: .utf8) ?? ""; errLock.unlock()
 
+        // Exit code 20 = the recording had no speech on either track (a false-positive
+        // "call"). Not a failure — signal the caller to discard the session quietly.
+        if proc.terminationStatus == 20 {
+            throw PipelineError.emptyRecording
+        }
+
         guard proc.terminationStatus == 0 else {
             throw PipelineError.failed((err.isEmpty ? out : err).trimmingCharacters(in: .whitespacesAndNewlines))
         }
@@ -89,10 +95,12 @@ enum PipelineRunner {
 enum PipelineError: LocalizedError {
     case nodeNotFound
     case failed(String)
+    case emptyRecording
     var errorDescription: String? {
         switch self {
         case .nodeNotFound: return "Couldn't find `node`. Install Node ≥20 or fix your shell PATH."
         case .failed(let msg): return "Pipeline failed: \(msg)"
+        case .emptyRecording: return "No speech detected — nothing to summarize."
         }
     }
 }
