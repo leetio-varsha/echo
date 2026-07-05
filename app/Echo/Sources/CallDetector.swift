@@ -1,6 +1,7 @@
 import Foundation
 import CoreAudio
 import Darwin
+import os
 
 /// Detects when a call is happening by watching whether any process *other than
 /// Echo itself* is using audio input (the microphone). Fires `onCallStart` when
@@ -10,14 +11,22 @@ import Darwin
 /// Uses the per-process Core Audio HAL (macOS 14.4+): a plain
 /// `kAudioDevicePropertyDeviceIsRunningSomewhere` boolean can't work here because
 /// Echo's own recording keeps the mic "running"; excluding our PID fixes that.
+///
+/// A process only counts as a call if it runs input on an actual input DEVICE.
+/// System speech daemons (corespeechd) analyze any media playback through an
+/// AudioTap — `IsRunningInput` is true but no input device is attached — which
+/// used to turn every YouTube video into a recorded "call".
 final class CallDetector {
     var onCallStart: (() -> Void)?
     var onCallEnd: (() -> Void)?
 
     private let myPID = ProcessInfo.processInfo.processIdentifier
+    private let log = Logger(subsystem: "org.leetio.echo", category: "detect")
     // Daemons spun up by Echo's OWN recording (ScreenCaptureKit → replayd) show as
     // mic-input processes and never release; they aren't "calls", so ignore them.
-    private let excludedNames: Set<String> = ["replayd", "coreaudiod"]
+    // corespeechd is also caught by the tap-vs-device check below; kept here as a
+    // fallback in case a macOS update starts reporting devices for its tap.
+    private let excludedNames: Set<String> = ["replayd", "coreaudiod", "corespeechd"]
     private let pollInterval: TimeInterval = 2
     private let endDebounce: TimeInterval = 5   // mic must stay free this long to end a call
 
@@ -48,8 +57,9 @@ final class CallDetector {
                 callActive = true
                 // Log which process triggered the detection so false-positive "calls"
                 // (a background app grabbing the mic) can be traced in Console.app.
+                // `.public` because `log show` redacts interpolated values otherwise.
                 let who = others.map { "\(processName($0))(\($0))" }.joined(separator: ", ")
-                NSLog("Echo: call auto-detected — mic held by: \(who)")
+                log.notice("call auto-detected — mic held by: \(who, privacy: .public)")
                 onCallStart?()
             }
         } else if callActive {
@@ -86,9 +96,33 @@ final class CallDetector {
             let pid = processPID(proc)
             if pid == myPID { continue }
             if excludedNames.contains(processName(pid)) { continue }
-            if processInputRunning(proc) { result.append(pid) }
+            guard processInputRunning(proc) else { continue }
+            // Tap-based listeners (corespeechd analyzing media speech, etc.) run
+            // input with NO input device attached — not a call. Verified on this
+            // machine: ffmpeg on the built-in mic reports its device here,
+            // corespeechd during YouTube/afplay playback reports [].
+            guard !processInputDevices(proc).isEmpty else { continue }
+            result.append(pid)
         }
         return result
+    }
+
+    /// Devices `proc` currently runs INPUT on (input scope — the global scope
+    /// returns [] even for real mic users). Empty for AudioTap-fed processes.
+    private func processInputDevices(_ proc: AudioObjectID) -> [AudioObjectID] {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyDevices,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(proc, &addr, 0, nil, &size) == noErr, size > 0 else {
+            return []
+        }
+        var devs = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(proc, &addr, 0, nil, &size, &devs) == noErr else {
+            return []
+        }
+        return devs
     }
 
     /// Short executable name for a PID (e.g. "replayd"), or "" if unavailable.
