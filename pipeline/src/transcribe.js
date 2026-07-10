@@ -40,6 +40,59 @@ function toWav16k(inputPath) {
   });
 }
 
+/** Normalize a token/phrase for repeat-detection: fold case, strip punctuation. */
+function normForRepeat(s) {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+/**
+ * Collapse pathological repetition loops that whisper.cpp falls into on marginal /
+ * overlapping audio ("I think that's a great point." ×hundreds), which `-mc 128`
+ * shrinks but doesn't fully kill. Deterministic safety net: any phrase (1..maxPhraseLen
+ * tokens) that repeats consecutively >= minReps times is capped to `keep` copies.
+ * Real speech (a doubled word, "yeah yeah") stays untouched — only >= minReps runs collapse.
+ */
+export function collapseRepeatedPhrases(
+  text,
+  { maxPhraseLen = 12, minReps = 3, keep = 2 } = {},
+) {
+  const tokens = String(text || "").split(/\s+/).filter(Boolean);
+  if (tokens.length < minReps) return String(text || "").trim();
+  const norm = tokens.map(normForRepeat);
+  const out = [];
+  let i = 0;
+  while (i < tokens.length) {
+    let collapsed = false;
+    // Shortest period first so "a b a b a b" collapses to "a b" (2 tokens), and a
+    // "…point. …point." loop to one sentence — not to a longer multiple of the unit.
+    const maxLen = Math.min(maxPhraseLen, Math.floor((tokens.length - i) / minReps));
+    for (let len = 1; len <= maxLen; len++) {
+      const key = norm.slice(i, i + len).join(" ");
+      if (!key) continue; // phrase is all punctuation -> not a meaningful repeat
+      let reps = 1;
+      while (
+        i + (reps + 1) * len <= tokens.length &&
+        norm.slice(i + reps * len, i + (reps + 1) * len).join(" ") === key
+      ) {
+        reps++;
+      }
+      if (reps >= minReps) {
+        for (let r = 0; r < Math.min(keep, reps); r++) {
+          out.push(...tokens.slice(i, i + len));
+        }
+        i += reps * len;
+        collapsed = true;
+        break;
+      }
+    }
+    if (!collapsed) {
+      out.push(tokens[i]);
+      i++;
+    }
+  }
+  return out.join(" ");
+}
+
 /**
  * Parse whisper.cpp `-oj` JSON into [{ start, end, text }] (offsets in ms).
  * Defensive: tolerates missing fields and drops empty segments.
@@ -144,7 +197,7 @@ export async function transcribe(cfg, audioPath) {
   try {
     const text = await runWhisper(cfg, wav, { json: false });
     if (!text) throw new Error("Transcription came back empty.");
-    return text;
+    return collapseRepeatedPhrases(text);
   } finally {
     try {
       fs.unlinkSync(wav);
@@ -187,15 +240,18 @@ export function mergeTracks(tracks) {
 
   const lines = [];
   let cur = null;
+  const flush = () => {
+    if (cur) lines.push(`[${cur.label}] ${collapseRepeatedPhrases(cur.text)}`);
+  };
   for (const seg of all) {
     if (cur && cur.label === seg.label) {
       cur.text += " " + seg.text;
     } else {
-      if (cur) lines.push(`[${cur.label}] ${cur.text}`);
+      flush();
       cur = { label: seg.label, text: seg.text };
     }
   }
-  if (cur) lines.push(`[${cur.label}] ${cur.text}`);
+  flush();
   return lines.join("\n");
 }
 
@@ -229,6 +285,36 @@ if (process.argv[1] && process.argv[1].endsWith("transcribe.js") && process.argv
     "mergeTracks interleaves by time and groups consecutive speaker turns",
   );
   eq(mergeTracks([]) === "", "mergeTracks([]) -> ''");
+
+  // --- repetition-loop collapse (the "transcript поплыл" failure) ---
+  const loop = "I think that's a great point. ".repeat(200).trim();
+  const deLooped = collapseRepeatedPhrases(loop);
+  eq(deLooped === "I think that's a great point. I think that's a great point.",
+    "collapseRepeatedPhrases caps a 200x sentence loop to 2 copies");
+  eq(collapseRepeatedPhrases("Мальчик ".repeat(12).trim()) === "Мальчик Мальчик",
+    "collapses a 12x single-word loop (unicode) to 2");
+  eq(collapseRepeatedPhrases("yeah yeah") === "yeah yeah",
+    "leaves a genuine doubled word alone (below minReps)");
+  eq(collapseRepeatedPhrases("da da da") === "da da",
+    "collapses a 3x run down to keep=2");
+  eq(collapseRepeatedPhrases("This is a normal sentence with no loops at all.")
+    === "This is a normal sentence with no loops at all.",
+    "leaves normal speech untouched");
+  eq(collapseRepeatedPhrases("great point great point great point extra")
+    === "great point great point extra",
+    "collapses a repeated 2-token phrase, keeps trailing context");
+  {
+    // end-to-end: a looping Them track gets de-looped inside mergeTracks
+    const themLoop = Array.from({ length: 50 }, (_, k) => ({
+      start: 1000 + k, end: 1000 + k, text: "I think that's a great point.",
+    }));
+    const m = mergeTracks([
+      { label: "Me", segments: [{ start: 0, end: 500, text: "Yeah." }] },
+      { label: "Them", segments: themLoop },
+    ]);
+    eq(m === "[Me] Yeah.\n[Them] I think that's a great point. I think that's a great point.",
+      "mergeTracks de-loops a 50-segment repetition on one track");
+  }
 
   console.log(ok ? "\ntranscribe self-test: PASS" : "\ntranscribe self-test: FAIL");
   process.exit(ok ? 0 : 1);
