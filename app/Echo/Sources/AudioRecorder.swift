@@ -33,7 +33,18 @@ final class TwoTrackRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
         systemURL = base.appendingPathComponent("them.caf")
 
         try startMic()
-        try await startSystem()
+        do {
+            try await startSystem()
+        } catch {
+            // Never leave a half-started session behind: the caller only learns the
+            // start failed, so nothing would ever call stop() — and AVAudioRecorder
+            // would keep the microphone hot (and the temp dir growing) until the
+            // next recording replaced it.
+            micRecorder?.stop()
+            micRecorder = nil
+            try? FileManager.default.removeItem(at: base)
+            throw error
+        }
     }
 
     func stop() async -> Output {
