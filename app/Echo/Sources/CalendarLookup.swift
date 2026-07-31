@@ -12,27 +12,56 @@ enum CalendarLookup {
         let attendees: [String]
     }
 
-    static func currentMeetingJSON() async -> URL? {
-        let store = EKEventStore()
-        guard await requestAccess(store) else {
-            return nil
-        }
+    /// The event a recording belongs to: a stable identity (so the app can notice
+    /// when the *next* meeting begins) plus the JSON handed to the pipeline.
+    /// `jsonURL` is nil when the event matched but its JSON couldn't be written —
+    /// the identity still counts, so a failed write can't make the app think the
+    /// meeting changed and split the recording over and over.
+    struct Current {
+        let eventID: String
+        let jsonURL: URL?
+    }
+
+    // One long-lived store: `ongoingEventID()` is polled while recording.
+    private static let store = EKEventStore()
+
+    /// Event for a recording that is starting now. Accepts an event up to 15 min
+    /// away, so joining a little early (or late) still gets enriched.
+    static func currentMeeting() async -> Current? {
+        guard let event = await matchingEvent(ongoingOnly: false) else { return nil }
+        return Current(eventID: event.eventIdentifier ?? "", jsonURL: writeJSON(for: event))
+    }
+
+    /// Identifier of the event strictly under way right now, or nil if there is none.
+    ///
+    /// Ongoing-only on purpose. This drives the "a new meeting started, split the
+    /// recording" check, and a call that runs past its slot must NOT be cut short:
+    /// only an actual next event ends a session, never the end of the current one.
+    static func ongoingEventID() async -> String? {
+        await matchingEvent(ongoingOnly: true)?.eventIdentifier
+    }
+
+    private static func matchingEvent(ongoingOnly: Bool) async -> EKEvent? {
+        guard await requestAccess() else { return nil }
 
         let now = Date()
+        let window: TimeInterval = 15 * 60
         let predicate = store.predicateForEvents(
-            withStart: now.addingTimeInterval(-15 * 60),
-            end: now.addingTimeInterval(15 * 60),
+            withStart: now.addingTimeInterval(-window),
+            end: now.addingTimeInterval(window),
             calendars: nil)
         let events = store.events(matching: predicate).filter { !$0.isAllDay }
 
         let ongoing = events.first { $0.startDate <= now && $0.endDate >= now }
+        if ongoingOnly { return ongoing }
+
         let nearest = events.min {
             abs($0.startDate.timeIntervalSince(now)) < abs($1.startDate.timeIntervalSince(now))
         }
-        guard let event = ongoing ?? nearest else {
-            return nil
-        }
+        return ongoing ?? nearest
+    }
 
+    private static func writeJSON(for event: EKEvent) -> URL? {
         var me = ""
         var attendees: [String] = []
         for p in event.attendees ?? [] {
@@ -46,7 +75,7 @@ enum CalendarLookup {
 
         do {
             let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("echo-meeting-\(Int(now.timeIntervalSince1970)).json")
+                .appendingPathComponent("echo-meeting-\(Int(Date().timeIntervalSince1970)).json")
             try JSONEncoder().encode(meeting).write(to: url)
             return url
         } catch {
@@ -54,7 +83,7 @@ enum CalendarLookup {
         }
     }
 
-    private static func requestAccess(_ store: EKEventStore) async -> Bool {
+    private static func requestAccess() async -> Bool {
         await withCheckedContinuation { cont in
             store.requestFullAccessToEvents { granted, _ in cont.resume(returning: granted) }
         }
