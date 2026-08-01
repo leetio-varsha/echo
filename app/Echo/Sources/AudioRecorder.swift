@@ -32,14 +32,20 @@ final class TwoTrackRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
         micURL = base.appendingPathComponent("me.m4a")
         systemURL = base.appendingPathComponent("them.caf")
 
-        try startMic()
+        // Never leave a half-started session behind: the caller only learns the
+        // start failed, so nothing would ever call stop() — the AVAudioRecorder
+        // would keep the microphone hot and the temp dir would linger.
+        //
+        // This covers startMic() too, which is where it actually bit: overnight
+        // 2026-07-30/31 the mic itself failed to start ("AQME Default-Input:
+        // client stopping after failed start") 33 times, each leaving a dir with
+        // the empty 557-byte me.m4a that AVAudioRecorder's init had already
+        // created, and a recorder that later deallocated under its own live
+        // AudioQueue callback — a SIGSEGV in AudioRecorderAQInputCallback.
         do {
+            try startMic()
             try await startSystem()
         } catch {
-            // Never leave a half-started session behind: the caller only learns the
-            // start failed, so nothing would ever call stop() — and AVAudioRecorder
-            // would keep the microphone hot (and the temp dir growing) until the
-            // next recording replaced it.
             micRecorder?.stop()
             micRecorder = nil
             try? FileManager.default.removeItem(at: base)
@@ -65,8 +71,11 @@ final class TwoTrackRecorder: NSObject, SCStreamDelegate, SCStreamOutput {
             AVNumberOfChannelsKey: 1,
         ]
         let rec = try AVAudioRecorder(url: micURL, settings: settings)
-        guard rec.record() else { throw RecorderError.micStartFailed }
+        // Take ownership BEFORE starting: if record() fails the recorder still
+        // has a live AudioQueue, and start()'s cleanup can only stop what it can
+        // reach. Left as a local it would deallocate under its own callback.
         micRecorder = rec
+        guard rec.record() else { throw RecorderError.micStartFailed }
     }
 
     // MARK: - System audio ("Them") via ScreenCaptureKit

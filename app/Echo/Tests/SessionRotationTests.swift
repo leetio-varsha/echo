@@ -5,13 +5,10 @@ import Foundation
 /// a Daily Sync and the meeting after it were recorded as one 2h25m session
 /// because the browser never released the microphone between them.
 ///
-/// Run with `app/test-rotation.sh`.
-@main
-struct SessionRotationTests {
+/// Run with `app/test.sh`.
+enum SessionRotationTests {
     static let cap: TimeInterval = 90 * 60
     static let minAge: TimeInterval = 60
-
-    static var failures = 0
 
     static func expect(
         _ name: String,
@@ -23,15 +20,10 @@ struct SessionRotationTests {
         let got = SessionRotation.reason(
             age: age, maxDuration: cap, minAgeBeforeSplit: minAge,
             taggedEventID: tagged, ongoingEventID: ongoing)
-        if got == want {
-            print("  ok   \(name)")
-        } else {
-            print("  FAIL \(name): want \(String(describing: want)), got \(String(describing: got))")
-            failures += 1
-        }
+        Check.equal(name, got, want)
     }
 
-    static func main() {
+    static func run() {
         print("SessionRotation.reason")
 
         expect("just started, no calendar at all",
@@ -68,11 +60,5 @@ struct SessionRotationTests {
 
         expect("length cap wins over a young session",
                age: cap + 5, tagged: nil, ongoing: nil, .lengthCap(minutes: 90))
-
-        if failures > 0 {
-            print("\n\(failures) failure(s)")
-            exit(1)
-        }
-        print("\nall passed")
     }
 }
