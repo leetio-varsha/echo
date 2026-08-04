@@ -40,6 +40,124 @@ function toWav16k(inputPath) {
   });
 }
 
+/**
+ * Read the PCM layout of a canonical RIFF/WAVE file (the one ffmpeg just wrote).
+ * Returns null when the file isn't plain PCM we can slice — callers then fall
+ * back to transcribing it in one pass instead of failing.
+ */
+export function readWavInfo(wavPath) {
+  let fd;
+  try {
+    fd = fs.openSync(wavPath, "r");
+    const head = Buffer.alloc(12);
+    if (fs.readSync(fd, head, 0, 12, 0) < 12) return null;
+    if (head.toString("ascii", 0, 4) !== "RIFF" || head.toString("ascii", 8, 12) !== "WAVE") return null;
+
+    const size = fs.fstatSync(fd).size;
+    let pos = 12;
+    let fmt = null;
+    // Walk the chunk list; `data` can be preceded by LIST/fact/etc.
+    while (pos + 8 <= size) {
+      const hdr = Buffer.alloc(8);
+      if (fs.readSync(fd, hdr, 0, 8, pos) < 8) return null;
+      const id = hdr.toString("ascii", 0, 4);
+      const len = hdr.readUInt32LE(4);
+      const body = pos + 8;
+      if (id === "fmt ") {
+        const b = Buffer.alloc(Math.min(16, len));
+        fs.readSync(fd, b, 0, b.length, body);
+        if (b.length < 16) return null;
+        fmt = {
+          format: b.readUInt16LE(0),
+          channels: b.readUInt16LE(2),
+          sampleRate: b.readUInt32LE(4),
+          bitsPerSample: b.readUInt16LE(14),
+        };
+      } else if (id === "data") {
+        if (!fmt || fmt.format !== 1) return null; // not plain PCM -> don't slice
+        const bytesPerFrame = (fmt.bitsPerSample / 8) * fmt.channels;
+        if (!bytesPerFrame) return null;
+        // A streamed WAV can carry len=0/0xFFFFFFFF; trust the file size then.
+        const dataBytes = len > 0 && body + len <= size ? len : size - body;
+        return {
+          ...fmt,
+          bytesPerFrame,
+          dataOffset: body,
+          dataBytes,
+          durationSec: dataBytes / bytesPerFrame / fmt.sampleRate,
+        };
+      }
+      pos = body + len + (len % 2); // chunks are word-aligned
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
+/** Write [fromSec, fromSec+lenSec) of a PCM wav to a new wav file. */
+function writeWavSlice(srcPath, info, fromSec, lenSec, outPath) {
+  const frameFrom = Math.floor(fromSec * info.sampleRate);
+  const frames = Math.min(
+    Math.ceil(lenSec * info.sampleRate),
+    Math.floor(info.dataBytes / info.bytesPerFrame) - frameFrom,
+  );
+  const bytes = Math.max(0, frames * info.bytesPerFrame);
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + bytes, 4);
+  header.write("WAVEfmt ", 8, "ascii");
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(info.channels, 22);
+  header.writeUInt32LE(info.sampleRate, 24);
+  header.writeUInt32LE(info.sampleRate * info.bytesPerFrame, 28);
+  header.writeUInt16LE(info.bytesPerFrame, 32);
+  header.writeUInt16LE(info.bitsPerSample, 34);
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(bytes, 40);
+
+  const src = fs.openSync(srcPath, "r");
+  const dst = fs.openSync(outPath, "w");
+  try {
+    fs.writeSync(dst, header);
+    const buf = Buffer.alloc(Math.min(bytes, 1 << 22) || 1);
+    let done = 0;
+    while (done < bytes) {
+      const want = Math.min(buf.length, bytes - done);
+      const got = fs.readSync(src, buf, 0, want, info.dataOffset + frameFrom * info.bytesPerFrame + done);
+      if (got <= 0) break;
+      fs.writeSync(dst, buf, 0, got);
+      done += got;
+    }
+  } finally {
+    try {
+      fs.closeSync(src);
+    } catch {}
+    try {
+      fs.closeSync(dst);
+    } catch {}
+  }
+}
+
+/**
+ * Short, punctuated seed sentences. whisper.cpp given no context frequently
+ * drops into an unpunctuated all-lowercase mode for a whole chunk (and the
+ * carried context keeps it there); priming it with one normal sentence in the
+ * chunk's own language restores capitalization + punctuation.
+ */
+const PRIMING_PROMPTS = {
+  en: "Okay, so let's align on the scope. I think we should discuss this.",
+  ru: "Хорошо, давайте согласуем скоуп. Думаю, нам нужно это обсудить.",
+  uk: "Добре, давайте узгодимо скоуп. Думаю, нам потрібно це обговорити.",
+};
+
 /** Normalize a token/phrase for repeat-detection: fold case, strip punctuation. */
 function normForRepeat(s) {
   return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
@@ -51,14 +169,24 @@ function normForRepeat(s) {
  * shrinks but doesn't fully kill. Deterministic safety net: any phrase (1..maxPhraseLen
  * tokens) that repeats consecutively >= minReps times is capped to `keep` copies.
  * Real speech (a doubled word, "yeah yeah") stays untouched — only >= minReps runs collapse.
+ *
+ * `maxPhraseLen` must comfortably exceed a spoken sentence: real loops repeat a whole
+ * sentence, and a limit shorter than it makes the whole backstop a no-op. (A 16-token
+ * loop sailed through the original 12-token limit and ate 55 minutes of a call.)
  */
 export function collapseRepeatedPhrases(
   text,
-  { maxPhraseLen = 12, minReps = 3, keep = 2 } = {},
+  { maxPhraseLen = 48, minReps = 3, keep = 2 } = {},
 ) {
   const tokens = String(text || "").split(/\s+/).filter(Boolean);
   if (tokens.length < minReps) return String(text || "").trim();
   const norm = tokens.map(normForRepeat);
+  // Compare token windows directly instead of building joined keys: same result,
+  // no per-window string allocation (this runs over whole-call transcripts).
+  const sameWindow = (a, b, len) => {
+    for (let k = 0; k < len; k++) if (norm[a + k] !== norm[b + k]) return false;
+    return true;
+  };
   const out = [];
   let i = 0;
   while (i < tokens.length) {
@@ -66,13 +194,14 @@ export function collapseRepeatedPhrases(
     // Shortest period first so "a b a b a b" collapses to "a b" (2 tokens), and a
     // "…point. …point." loop to one sentence — not to a longer multiple of the unit.
     const maxLen = Math.min(maxPhraseLen, Math.floor((tokens.length - i) / minReps));
+    let allPunct = true;
     for (let len = 1; len <= maxLen; len++) {
-      const key = norm.slice(i, i + len).join(" ");
-      if (!key) continue; // phrase is all punctuation -> not a meaningful repeat
+      if (norm[i + len - 1]) allPunct = false;
+      if (allPunct) continue; // phrase is all punctuation -> not a meaningful repeat
       let reps = 1;
       while (
         i + (reps + 1) * len <= tokens.length &&
-        norm.slice(i + reps * len, i + (reps + 1) * len).join(" ") === key
+        sameWindow(i, i + reps * len, len)
       ) {
         reps++;
       }
@@ -118,7 +247,7 @@ export function parseWhisperSegments(raw) {
  * Run whisper.cpp on a WAV file. mode "txt" returns the transcript string;
  * mode "json" returns timestamped segments [{ start, end, text }].
  */
-function runWhisper(cfg, wavPath, { json = false } = {}) {
+function runWhisper(cfg, wavPath, { json = false, lang = null, prompt = "" } = {}) {
   return new Promise((resolve, reject) => {
     const outPrefix = path.join(
       os.tmpdir(),
@@ -135,7 +264,11 @@ function runWhisper(cfg, wavPath, { json = false } = {}) {
       outPrefix,
       "-np", // no prints / progress noise
     ];
-    args.push("-l", cfg.whisper.lang && cfg.whisper.lang !== "auto" ? cfg.whisper.lang : "auto");
+    const configured = cfg.whisper.lang && cfg.whisper.lang !== "auto" ? cfg.whisper.lang : null;
+    args.push("-l", configured || lang || "auto");
+    if (prompt) {
+      args.push("--prompt", prompt);
+    }
     if (cfg.whisper.threads) {
       args.push("-t", String(cfg.whisper.threads));
     }
@@ -186,6 +319,107 @@ function runWhisper(cfg, wavPath, { json = false } = {}) {
 }
 
 /**
+ * Ask whisper.cpp which language a wav is in (`-dl` exits right after detecting,
+ * so this only costs one 30s window). Returns { lang, p } or null when detection
+ * fails — callers then fall back to `auto`.
+ *
+ * VAD matters here as much as it does for transcription: detection reads the
+ * FIRST window of the file, and on a per-speaker track that is usually silence
+ * or breathing. Measured on one call's opening chunk: without VAD "en" p=0.51
+ * and "en" p=0.32 (both wrong, and confident enough to be believed); with VAD
+ * "ru" p=0.83 and "uk" p=0.93 (both right).
+ */
+function detectLanguage(cfg, wavPath) {
+  return new Promise((resolve) => {
+    const args = ["-m", cfg.whisper.modelPath, "-f", wavPath, "-dl"];
+    if (cfg.whisper.vadModel && fs.existsSync(cfg.whisper.vadModel)) {
+      args.push("--vad", "--vad-model", cfg.whisper.vadModel);
+    }
+    const proc = spawn(cfg.whisper.binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    proc.stdout.on("data", (d) => (out += d.toString()));
+    proc.stderr.on("data", (d) => (out += d.toString()));
+    proc.on("error", () => resolve(null));
+    proc.on("close", () => {
+      const m = out.match(/auto-detected language:\s*([a-z]{2,3})\s*\(p\s*=\s*([0-9.]+)\)/i);
+      resolve(m ? { lang: m[1].toLowerCase(), p: Number(m[2]) } : null);
+    });
+  });
+}
+
+/** Strip a priming prompt that whisper occasionally echoes back as the first segment. */
+function dropEchoedPrompt(segments, prompt) {
+  if (!prompt || !segments.length) return segments;
+  const key = normForRepeat(prompt);
+  return segments.filter((s, idx) => !(idx === 0 && normForRepeat(s.text) === key));
+}
+
+/**
+ * Transcribe a 16kHz mono wav into timestamped segments, chunk by chunk.
+ *
+ * One whisper.cpp invocation detects the language once and carries decoder
+ * context across the entire file. On a long, multilingual meeting that means a
+ * single mis-detected 30s intro re-renders the whole call in the wrong language,
+ * and one repetition loop keeps feeding itself to the end of the recording.
+ * Transcribing in chunks gives each one a fresh context and its own language.
+ * Falls back to a single pass when chunking is disabled or the wav can't be sliced.
+ */
+async function transcribeWavSegments(cfg, wavPath) {
+  const info = readWavInfo(wavPath);
+  const chunkSec = cfg.whisper.chunkSec;
+  const chunks =
+    chunkSec > 0 && info && info.durationSec > chunkSec
+      ? Math.ceil(info.durationSec / chunkSec)
+      : 1;
+  // An explicitly configured WHISPER_LANG wins outright — don't pay for detection
+  // we're going to ignore, and prime in the language we'll actually decode in.
+  const forced = cfg.whisper.lang && cfg.whisper.lang !== "auto" ? cfg.whisper.lang : null;
+  const languageOf = async (file, fallback) => {
+    if (forced) return forced;
+    const detected = await detectLanguage(cfg, file);
+    return detected && detected.p >= 0.5 ? detected.lang : fallback;
+  };
+
+  if (chunks === 1) {
+    const lang = await languageOf(wavPath, null);
+    const prompt = (lang && PRIMING_PROMPTS[lang]) || "";
+    return dropEchoedPrompt(await runWhisper(cfg, wavPath, { json: true, lang, prompt }), prompt);
+  }
+
+  const all = [];
+  let lastLang = null;
+  for (let i = 0; i < chunks; i++) {
+    const from = i * chunkSec;
+    const slice = path.join(
+      os.tmpdir(),
+      `echo-chunk-${crypto.randomBytes(6).toString("hex")}.wav`,
+    );
+    writeWavSlice(wavPath, info, from, chunkSec, slice);
+    try {
+      // A near-silent chunk detects "some" language with low confidence; keep the
+      // previous chunk's language there instead of letting the call switch tongue.
+      const lang = await languageOf(slice, lastLang);
+      if (lang) lastLang = lang;
+      const prompt = (lang && PRIMING_PROMPTS[lang]) || "";
+      const segs = dropEchoedPrompt(
+        await runWhisper(cfg, slice, { json: true, lang, prompt }),
+        prompt,
+      );
+      const offset = from * 1000;
+      for (const s of segs) all.push({ ...s, start: s.start + offset, end: s.end + offset });
+      console.log(
+        `  chunk ${i + 1}/${chunks} (${from}s+): lang=${lang || "auto"}, ${segs.length} segments`,
+      );
+    } finally {
+      try {
+        fs.unlinkSync(slice);
+      } catch {}
+    }
+  }
+  return all;
+}
+
+/**
  * Transcribe an audio file locally with whisper.cpp.
  * @returns {Promise<string>} transcript text
  */
@@ -195,7 +429,8 @@ export async function transcribe(cfg, audioPath) {
   }
   const wav = await toWav16k(audioPath);
   try {
-    const text = await runWhisper(cfg, wav, { json: false });
+    const segments = await transcribeWavSegments(cfg, wav);
+    const text = segments.map((s) => s.text).join(" ").trim();
     if (!text) throw new Error("Transcription came back empty.");
     return collapseRepeatedPhrases(text);
   } finally {
@@ -216,7 +451,7 @@ export async function transcribeSegments(cfg, audioPath) {
   }
   const wav = await toWav16k(audioPath);
   try {
-    return await runWhisper(cfg, wav, { json: true });
+    return await transcribeWavSegments(cfg, wav);
   } finally {
     try {
       fs.unlinkSync(wav);
@@ -314,6 +549,60 @@ if (process.argv[1] && process.argv[1].endsWith("transcribe.js") && process.argv
     ]);
     eq(m === "[Me] Yeah.\n[Them] I think that's a great point. I think that's a great point.",
       "mergeTracks de-loops a 50-segment repetition on one track");
+  }
+  {
+    // The 2026-08-04 failure: a 16-token sentence looped 391× and sailed straight
+    // through the old 12-token limit, wiping 55 minutes of one track.
+    const s16 = "Yeah, and I think I can do something for today, but very basic implementation will be.";
+    eq(s16.split(/\s+/).length === 16, "regression fixture really is 16 tokens");
+    eq(collapseRepeatedPhrases(`${s16} `.repeat(391).trim()) === `${s16} ${s16}`,
+      "collapses a 16-token sentence loop (old maxPhraseLen=12 missed it entirely)");
+    // …and the long one that survived on the other track of the same call.
+    const s34 = "Okay, so then it means, Jane, that there is no need to show this info when we show on the dashboard cards, you know, that three targets are in outreach because, like, we don't have.";
+    eq(s34.split(/\s+/).length > 30, "long fixture is >30 tokens");
+    eq(collapseRepeatedPhrases(`${s34} `.repeat(6).trim()) === `${s34} ${s34}`,
+      "collapses a >30-token sentence loop");
+    eq(collapseRepeatedPhrases(`Hi. ${s16} ${s16} ${s16} Bye.`) === `Hi. ${s16} ${s16} Bye.`,
+      "keeps the surrounding speech when collapsing a long loop");
+  }
+
+  // --- wav header parsing + slicing (chunked transcription) ---
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "echo-wavtest-"));
+    const wav = path.join(dir, "t.wav");
+    const rate = 16000, secs = 5, frames = rate * secs;
+    const pcm = Buffer.alloc(frames * 2);
+    for (let k = 0; k < frames; k++) pcm.writeInt16LE((k % 30000) - 15000, k * 2);
+    const h = Buffer.alloc(44);
+    h.write("RIFF", 0, "ascii"); h.writeUInt32LE(36 + pcm.length, 4);
+    h.write("WAVEfmt ", 8, "ascii"); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20);
+    h.writeUInt16LE(1, 22); h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28);
+    h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34);
+    h.write("data", 36, "ascii"); h.writeUInt32LE(pcm.length, 40);
+    fs.writeFileSync(wav, Buffer.concat([h, pcm]));
+
+    const info = readWavInfo(wav);
+    eq(info && info.sampleRate === 16000 && info.channels === 1, "readWavInfo reads fmt");
+    eq(info && Math.abs(info.durationSec - secs) < 1e-9, "readWavInfo computes duration");
+    eq(readWavInfo(path.join(dir, "nope.wav")) === null, "readWavInfo(missing) -> null (degrades to single pass)");
+    fs.writeFileSync(path.join(dir, "junk.wav"), Buffer.from("not a wav at all"));
+    eq(readWavInfo(path.join(dir, "junk.wav")) === null, "readWavInfo(non-wav) -> null");
+
+    const slice = path.join(dir, "s.wav");
+    writeWavSlice(wav, info, 1, 2, slice);
+    const si = readWavInfo(slice);
+    eq(si && Math.abs(si.durationSec - 2) < 1e-9, "writeWavSlice yields the requested duration");
+    eq(
+      Buffer.compare(
+        fs.readFileSync(slice).subarray(si.dataOffset),
+        pcm.subarray(rate * 2, rate * 2 * 3),
+      ) === 0,
+      "writeWavSlice copies exactly the requested samples",
+    );
+    // A slice running past the end is clamped, not padded with garbage.
+    writeWavSlice(wav, info, 4, 10, slice);
+    eq(Math.abs(readWavInfo(slice).durationSec - 1) < 1e-9, "writeWavSlice clamps at end of file");
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 
   console.log(ok ? "\ntranscribe self-test: PASS" : "\ntranscribe self-test: FAIL");
