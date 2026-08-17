@@ -64,6 +64,11 @@ export function loadConfig({ dryRun = false, needWhisper = true } = {}) {
   if (!["claude-cli", "api"].includes(summaryBackend)) {
     throw new Error(`SUMMARY_BACKEND must be one of claude-cli|api, got "${summaryBackend}"`);
   }
+
+  const transcriptPolish = opt("TRANSCRIPT_POLISH", "on").toLowerCase();
+  if (!["on", "off"].includes(transcriptPolish)) {
+    throw new Error(`TRANSCRIPT_POLISH must be on|off, got "${transcriptPolish}"`);
+  }
   // ANTHROPIC_API_KEY is only required for the "api" backend on a real run. The
   // default "claude-cli" backend reuses this machine's Claude Code login
   // (subscription), so no API key — and no metered API billing — is needed.
@@ -84,7 +89,15 @@ export function loadConfig({ dryRun = false, needWhisper = true } = {}) {
       projectsDbId: req("NOTION_PROJECTS_DB_ID"),
       // Projects whose Status equals this are treated as archived and skipped.
       projectDoneStatus: opt("PROJECT_DONE_STATUS", "Завершён"),
+      // Optional page whose content is a hand-edited transcription glossary
+      // (names, product terms). Fetched per run, cached locally.
+      glossaryPageId: opt("NOTION_GLOSSARY_PAGE_ID"),
     },
+    // Local glossary file (one term per line and/or comma-separated).
+    glossaryPath: resolveFromRoot(opt("GLOSSARY_PATH", "glossary.txt")),
+    // LLM cleanup pass over the transcript (casing/punctuation repair, glossary
+    // spelling, speaker attribution). "off" publishes the raw whisper merge.
+    transcriptPolish: transcriptPolish === "on",
     whisper: {
       binPath: requireWhisper ? req("WHISPER_CPP_PATH") : opt("WHISPER_CPP_PATH"),
       modelPath: resolveFromRoot(opt("WHISPER_MODEL", "models/ggml-large-v3.bin")),

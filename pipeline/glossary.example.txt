@@ -1,0 +1,16 @@
+# Transcription glossary — correct spellings of names and domain terms that
+# whisper tends to garble. Copy to glossary.txt (gitignored) and fill in yours,
+# or keep it in a Notion page (NOTION_GLOSSARY_PAGE_ID) and edit it there.
+#
+# Format: one term per line and/or comma-separated; `#` starts a comment.
+# Put the most important terms first — the whisper prompt budget is small
+# (~400 chars), everything past it is used only by the polish pass.
+
+# People (calendar attendees are added automatically; add nicknames/spellings)
+# Jane, Irina, Dennis
+
+# Products / companies
+# Northwind, Clerk, Stripe, ATEM, Lightbox RE
+
+# Domain terms
+# briefing, watchlist, workspaces, acquisition intelligence, charter members

@@ -351,7 +351,19 @@ function detectLanguage(cfg, wavPath) {
 function dropEchoedPrompt(segments, prompt) {
   if (!prompt || !segments.length) return segments;
   const key = normForRepeat(prompt);
-  return segments.filter((s, idx) => !(idx === 0 && normForRepeat(s.text) === key));
+  // The echo can be the whole prompt or just its tail (e.g. the vocabulary list),
+  // so match "first segment is a sizable substring of the prompt", not equality.
+  return segments.filter((s, idx) => {
+    if (idx !== 0) return true;
+    const seg = normForRepeat(s.text);
+    return !(seg.length >= 12 && key.includes(seg)) && seg !== key;
+  });
+}
+
+/** Prompt for a chunk: punctuation-priming seed + domain vocabulary (names, terms). */
+function chunkPrompt(lang, vocab) {
+  const seed = (lang && PRIMING_PROMPTS[lang]) || "";
+  return [seed, vocab].filter(Boolean).join(" ");
 }
 
 /**
@@ -364,7 +376,7 @@ function dropEchoedPrompt(segments, prompt) {
  * Transcribing in chunks gives each one a fresh context and its own language.
  * Falls back to a single pass when chunking is disabled or the wav can't be sliced.
  */
-async function transcribeWavSegments(cfg, wavPath) {
+async function transcribeWavSegments(cfg, wavPath, vocab = "") {
   const info = readWavInfo(wavPath);
   const chunkSec = cfg.whisper.chunkSec;
   const chunks =
@@ -382,7 +394,7 @@ async function transcribeWavSegments(cfg, wavPath) {
 
   if (chunks === 1) {
     const lang = await languageOf(wavPath, null);
-    const prompt = (lang && PRIMING_PROMPTS[lang]) || "";
+    const prompt = chunkPrompt(lang, vocab);
     return dropEchoedPrompt(await runWhisper(cfg, wavPath, { json: true, lang, prompt }), prompt);
   }
 
@@ -400,7 +412,7 @@ async function transcribeWavSegments(cfg, wavPath) {
       // previous chunk's language there instead of letting the call switch tongue.
       const lang = await languageOf(slice, lastLang);
       if (lang) lastLang = lang;
-      const prompt = (lang && PRIMING_PROMPTS[lang]) || "";
+      const prompt = chunkPrompt(lang, vocab);
       const segs = dropEchoedPrompt(
         await runWhisper(cfg, slice, { json: true, lang, prompt }),
         prompt,
@@ -423,13 +435,13 @@ async function transcribeWavSegments(cfg, wavPath) {
  * Transcribe an audio file locally with whisper.cpp.
  * @returns {Promise<string>} transcript text
  */
-export async function transcribe(cfg, audioPath) {
+export async function transcribe(cfg, audioPath, { vocab = "" } = {}) {
   if (!fs.existsSync(audioPath)) {
     throw new Error(`Audio file not found: ${audioPath}`);
   }
   const wav = await toWav16k(audioPath);
   try {
-    const segments = await transcribeWavSegments(cfg, wav);
+    const segments = await transcribeWavSegments(cfg, wav, vocab);
     const text = segments.map((s) => s.text).join(" ").trim();
     if (!text) throw new Error("Transcription came back empty.");
     return collapseRepeatedPhrases(text);
@@ -445,13 +457,13 @@ export async function transcribe(cfg, audioPath) {
  * Returns [] for silence rather than throwing, so a quiet track degrades gracefully.
  * @returns {Promise<Array<{start:number,end:number,text:string}>>}
  */
-export async function transcribeSegments(cfg, audioPath) {
+export async function transcribeSegments(cfg, audioPath, { vocab = "" } = {}) {
   if (!fs.existsSync(audioPath)) {
     throw new Error(`Audio file not found: ${audioPath}`);
   }
   const wav = await toWav16k(audioPath);
   try {
-    return await transcribeWavSegments(cfg, wav);
+    return await transcribeWavSegments(cfg, wav, vocab);
   } finally {
     try {
       fs.unlinkSync(wav);
@@ -460,34 +472,112 @@ export async function transcribeSegments(cfg, audioPath) {
 }
 
 /**
+ * Collapse runs of (near-)identical consecutive segments on ONE track before
+ * merging. Per-turn `collapseRepeatedPhrases` misses a loop that ends up spread
+ * across several turns (the other speaker's short interjections split it), but
+ * on its own track the loop is still one consecutive run of equal segments.
+ * Periods 1 and 2 cover the observed failures ("A A A…", "A B A B A B…").
+ */
+export function collapseRepeatedSegments(segments, { minReps = 3, keep = 2 } = {}) {
+  const segs = segments || [];
+  if (segs.length < minReps) return segs;
+  const norm = segs.map((s) => normForRepeat(s.text));
+  const out = [];
+  let i = 0;
+  while (i < segs.length) {
+    let collapsed = false;
+    for (const period of [1, 2]) {
+      if (i + period * minReps > segs.length) break;
+      let reps = 1;
+      while (
+        i + (reps + 1) * period <= segs.length &&
+        Array.from({ length: period }, (_, k) => norm[i + k] && norm[i + k] === norm[i + reps * period + k]).every(Boolean)
+      ) {
+        reps++;
+      }
+      if (reps >= minReps) {
+        out.push(...segs.slice(i, i + keep * period));
+        i += reps * period;
+        collapsed = true;
+        break;
+      }
+    }
+    if (!collapsed) {
+      out.push(segs[i]);
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * A short interjection ("Okay.", "Yeah.", "Mm-hmm.") that lands in the middle of
+ * the other speaker's sentence. Questions are never treated as backchannels —
+ * "Is it correct?" must keep its exact position in the flow.
+ */
+function isBackchannel(text) {
+  const t = String(text || "").trim();
+  return t.length > 0 && t.length <= 40 && !t.includes("?") && t.split(/\s+/).length <= 4;
+}
+
+/** True when a turn ends on a finished sentence (so an interjection after it is NOT interrupting). */
+function endsSentence(text) {
+  return /[.!?…]["»')\]]*$/.test(String(text || "").trim());
+}
+
+/**
  * Interleave labeled tracks into a single speaker-tagged transcript, ordered by
  * time. Consecutive segments from the same speaker are merged into one line.
+ * A short backchannel that interrupts the other speaker mid-sentence is moved
+ * to AFTER that speaker's turn instead of shredding one sentence into three
+ * lines ("[A] start of… [B] Okay. [A] …rest of the sentence").
  * @param {Array<{label:string, segments:Array<{start:number,end:number,text:string}>}>} tracks
  * @returns {string} e.g. "[Me] ...\n[Them] ...\n[Me] ..."
  */
 export function mergeTracks(tracks) {
   const all = [];
   for (const t of tracks || []) {
-    for (const s of t.segments || []) all.push({ ...s, label: t.label });
+    for (const s of collapseRepeatedSegments(t.segments || [])) all.push({ ...s, label: t.label });
   }
   // Sort by start time; ties broken by label for stable output.
   all.sort((a, b) => a.start - b.start || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
 
-  const lines = [];
-  let cur = null;
-  const flush = () => {
-    if (cur) lines.push(`[${cur.label}] ${collapseRepeatedPhrases(cur.text)}`);
-  };
+  // Group into speaker turns first.
+  const turns = [];
   for (const seg of all) {
+    const cur = turns[turns.length - 1];
     if (cur && cur.label === seg.label) {
       cur.text += " " + seg.text;
     } else {
-      flush();
-      cur = { label: seg.label, text: seg.text };
+      turns.push({ label: seg.label, text: seg.text });
     }
   }
-  flush();
-  return lines.join("\n");
+
+  // Weave backchannels: [A][b][A] where A was cut off mid-sentence and b is a
+  // short non-question interjection becomes one merged [A] turn followed by [b].
+  // Repeat until stable so a chain ("[A] [b] [A] [b] [A]") fully reassembles.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 1; i < turns.length - 1; i++) {
+      if (
+        turns[i - 1].label === turns[i + 1].label &&
+        turns[i].label !== turns[i - 1].label &&
+        !endsSentence(turns[i - 1].text) &&
+        isBackchannel(turns[i].text)
+      ) {
+        turns[i - 1].text += " " + turns[i + 1].text;
+        const back = turns[i];
+        turns.splice(i, 2, back);
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  return turns
+    .map((t) => `[${t.label}] ${collapseRepeatedPhrases(t.text)}`)
+    .join("\n");
 }
 
 // --- self-test: whisper-JSON parsing + track merging (no whisper binary needed) ---
@@ -564,6 +654,66 @@ if (process.argv[1] && process.argv[1].endsWith("transcribe.js") && process.argv
       "collapses a >30-token sentence loop");
     eq(collapseRepeatedPhrases(`Hi. ${s16} ${s16} ${s16} Bye.`) === `Hi. ${s16} ${s16} Bye.`,
       "keeps the surrounding speech when collapsing a long loop");
+  }
+
+  // --- backchannel weaving: don't shred a sentence around a short interjection ---
+  {
+    const m = mergeTracks([
+      { label: "Them", segments: [
+        { start: 0, end: 2000, text: "My question is, it seems like we placed a lot of cards on" },
+        { start: 5000, end: 7000, text: "the top half above the acquisition targets." },
+      ] },
+      { label: "Me", segments: [{ start: 3000, end: 3500, text: "Okay." }] },
+    ]);
+    eq(
+      m === "[Them] My question is, it seems like we placed a lot of cards on the top half above the acquisition targets.\n[Me] Okay.",
+      "weaves a mid-sentence backchannel to after the interrupted turn",
+    );
+  }
+  {
+    // A finished sentence before the interjection -> real turn-taking, keep order.
+    const m = mergeTracks([
+      { label: "Me", segments: [
+        { start: 0, end: 1000, text: "Давай зафиналим." },
+        { start: 4000, end: 5000, text: "Я напишу пресс-релиз." },
+      ] },
+      { label: "Them", segments: [{ start: 2000, end: 2500, text: "Окей." }] },
+    ]);
+    eq(
+      m === "[Me] Давай зафиналим.\n[Them] Окей.\n[Me] Я напишу пресс-релиз.",
+      "does NOT weave when the previous turn ended on a full sentence",
+    );
+  }
+  {
+    // Questions are never woven — their position carries meaning.
+    const m = mergeTracks([
+      { label: "Them", segments: [
+        { start: 0, end: 2000, text: "So we do three for Scout and" },
+        { start: 5000, end: 7000, text: "ten for Operator, is that fine?" },
+      ] },
+      { label: "Me", segments: [{ start: 3000, end: 3500, text: "Is it correct?" }] },
+    ]);
+    eq(m.startsWith("[Them] So we do three for Scout and\n[Me] Is it correct?"),
+      "keeps a question interjection in place");
+  }
+
+  // --- segment-level loop collapse (cross-turn loops on one track) ---
+  {
+    const loopSeg = (k, text) => ({ start: 1000 + k * 100, end: 1000 + k * 100 + 50, text });
+    const segs = [
+      loopSeg(0, "So yeah, and here we go."),
+      ...Array.from({ length: 6 }, (_, k) => loopSeg(k + 1, "Yeah, we're going to have to implement this.")),
+      loopSeg(9, "We're locked into the dashboard."),
+    ];
+    const out = collapseRepeatedSegments(segs);
+    eq(out.length === 4, "collapseRepeatedSegments caps a 6x identical-segment run to 2");
+    eq(out[out.length - 1].text === "We're locked into the dashboard.", "keeps surrounding segments");
+    // period-2 loop: A B A B A B -> A B A B
+    const ab = ["A phrase.", "B phrase.", "A phrase.", "B phrase.", "A phrase.", "B phrase."]
+      .map((t, k) => loopSeg(k, t));
+    eq(collapseRepeatedSegments(ab).length === 4, "collapses a period-2 segment loop");
+    eq(collapseRepeatedSegments([loopSeg(0, "hi"), loopSeg(1, "hi")]).length === 2,
+      "leaves a doubled segment alone (below minReps)");
   }
 
   // --- wav header parsing + slicing (chunked transcription) ---
