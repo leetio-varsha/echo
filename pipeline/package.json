@@ -13,7 +13,9 @@
     "test:parse": "node src/summarize.js --self-test",
     "test:merge": "node src/transcribe.js --self-test",
     "test:notion": "node src/setup-notion.js --self-test",
-    "test": "npm run test:parse && npm run test:merge && npm run test:notion"
+    "test:glossary": "node src/glossary.js --self-test",
+    "test:polish": "node src/polish.js --self-test",
+    "test": "npm run test:parse && npm run test:merge && npm run test:notion && npm run test:glossary && npm run test:polish"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",

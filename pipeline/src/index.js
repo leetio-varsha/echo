@@ -5,6 +5,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { loadConfig } from "./config.js";
 import { transcribe, transcribeSegments, mergeTracks } from "./transcribe.js";
+import { loadGlossary, buildVocab } from "./glossary.js";
+import { polishTranscript } from "./polish.js";
 import { summarize } from "./summarize.js";
 import {
   createCallPage,
@@ -65,6 +67,26 @@ function preserveTranscript(transcript, transcriptPath) {
   }
 }
 
+/**
+ * Archive the raw (pre-polish) whisper transcript so the LLM cleanup pass can
+ * never lose the original wording. Best-effort — a failure only logs.
+ */
+function saveRawTranscript(transcript, recordedAt) {
+  try {
+    const dir = path.join(os.homedir(), "Library", "Application Support", "Echo", "raw-transcripts");
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = (recordedAt instanceof Date ? recordedAt : new Date())
+      .toISOString()
+      .slice(0, 16)
+      .replace(/[:T]/g, "-");
+    const out = path.join(dir, `${stamp}.txt`);
+    fs.writeFileSync(out, transcript, "utf8");
+    console.log(`Raw transcript archived: ${out}`);
+  } catch (e) {
+    console.warn(`Could not archive raw transcript: ${e.message}`);
+  }
+}
+
 /** Label for the "[Them]" track: the single other attendee's name if known, else "Them". */
 function otherAttendeeLabel(meeting) {
   const attendees = Array.isArray(meeting?.attendees) ? meeting.attendees.filter(Boolean) : [];
@@ -97,6 +119,18 @@ async function main() {
   }
   const themLabel = otherAttendeeLabel(meeting);
 
+  // Transcription glossary (local file + optional Notion page): names and domain
+  // terms whisper otherwise garbles. Fed into the whisper prompt and the polish
+  // pass. Any failure here degrades to "no glossary", never blocks the call.
+  let glossaryTerms = [];
+  try {
+    glossaryTerms = await loadGlossary(cfg);
+  } catch (e) {
+    console.warn(`Glossary unavailable (continuing without it): ${e.message}`);
+  }
+  const vocab = buildVocab(glossaryTerms, meeting);
+  if (vocab) console.log(`Whisper vocabulary (${glossaryTerms.length} glossary terms): ${vocab}`);
+
   // 1. Transcript (from whisper, or a provided file).
   let transcript;
   let recordedAt = new Date();
@@ -114,8 +148,8 @@ async function main() {
       throw new Error("Two-track mode needs both --mic=<me.wav> and --system=<them.wav>.");
     }
     console.log(`Transcribing two tracks with whisper.cpp (Me + ${themLabel})…`);
-    const meSegs = await transcribeSegments(cfg, args.micPath);
-    const themSegs = await transcribeSegments(cfg, args.systemPath);
+    const meSegs = await transcribeSegments(cfg, args.micPath, { vocab });
+    const themSegs = await transcribeSegments(cfg, args.systemPath, { vocab });
     transcript = mergeTracks([
       { label: "Me", segments: meSegs },
       { label: themLabel, segments: themSegs },
@@ -136,11 +170,32 @@ async function main() {
     );
   } else {
     console.log(`Transcribing ${args.audioPath} with whisper.cpp…`);
-    transcript = await transcribe(cfg, args.audioPath);
+    transcript = await transcribe(cfg, args.audioPath, { vocab });
     try {
       recordedAt = fs.statSync(args.audioPath).mtime;
     } catch {}
     console.log(`Transcript ready (${transcript.length} chars).`);
+  }
+
+  // 1b. LLM polish pass: repair punctuation/casing, fix misheard glossary terms,
+  // attribute "[Them]" lines to named participants. The raw transcript is saved
+  // to disk first — polish must never be able to lose the original.
+  if (cfg.transcriptPolish && !cfg.dryRun) {
+    const rawTranscript = transcript;
+    try {
+      console.log("Polishing transcript (punctuation, glossary terms, speaker names)…");
+      const polished = await polishTranscript(cfg, {
+        transcript,
+        meeting,
+        glossary: glossaryTerms,
+      });
+      if (polished && polished !== rawTranscript) {
+        saveRawTranscript(rawTranscript, recordedAt);
+        transcript = polished;
+      }
+    } catch (e) {
+      console.warn(`Polish pass failed (continuing with the raw transcript): ${e.message}`);
+    }
   }
 
   // 2. Fetch active projects (for auto-attach), unless dry-run without a token.

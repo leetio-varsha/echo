@@ -2,6 +2,10 @@
 .env
 pipeline/.env
 
+# personal transcription glossary (names, employers' product terms) + its cache
+pipeline/glossary.txt
+pipeline/.glossary-cache.txt
+
 # whisper models (large, downloaded locally)
 pipeline/models/*
 !pipeline/models/.gitkeep

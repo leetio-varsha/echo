@@ -49,9 +49,25 @@ export function loadConfig({ dryRun = false, needWhisper = true } = {}) {
 
   const whisperLang = opt("WHISPER_LANG", "auto").toLowerCase();
 
+  // Chunk length for long-audio transcription. 0 disables chunking; anything
+  // below a minute would slice speech into useless fragments, so reject it
+  // loudly instead of silently producing a shredded transcript.
+  const chunkSecRaw = opt("WHISPER_CHUNK_SEC", "600");
+  const chunkSec = Number(chunkSecRaw);
+  if (!Number.isFinite(chunkSec) || chunkSec < 0 || (chunkSec > 0 && chunkSec < 60)) {
+    throw new Error(
+      `WHISPER_CHUNK_SEC must be 0 (single pass) or at least 60 seconds, got "${chunkSecRaw}"`,
+    );
+  }
+
   const summaryBackend = opt("SUMMARY_BACKEND", "claude-cli").toLowerCase();
   if (!["claude-cli", "api"].includes(summaryBackend)) {
     throw new Error(`SUMMARY_BACKEND must be one of claude-cli|api, got "${summaryBackend}"`);
+  }
+
+  const transcriptPolish = opt("TRANSCRIPT_POLISH", "on").toLowerCase();
+  if (!["on", "off"].includes(transcriptPolish)) {
+    throw new Error(`TRANSCRIPT_POLISH must be on|off, got "${transcriptPolish}"`);
   }
   // ANTHROPIC_API_KEY is only required for the "api" backend on a real run. The
   // default "claude-cli" backend reuses this machine's Claude Code login
@@ -73,7 +89,15 @@ export function loadConfig({ dryRun = false, needWhisper = true } = {}) {
       projectsDbId: req("NOTION_PROJECTS_DB_ID"),
       // Projects whose Status equals this are treated as archived and skipped.
       projectDoneStatus: opt("PROJECT_DONE_STATUS", "Завершён"),
+      // Optional page whose content is a hand-edited transcription glossary
+      // (names, product terms). Fetched per run, cached locally.
+      glossaryPageId: opt("NOTION_GLOSSARY_PAGE_ID"),
     },
+    // Local glossary file (one term per line and/or comma-separated).
+    glossaryPath: resolveFromRoot(opt("GLOSSARY_PATH", "glossary.txt")),
+    // LLM cleanup pass over the transcript (casing/punctuation repair, glossary
+    // spelling, speaker attribution). "off" publishes the raw whisper merge.
+    transcriptPolish: transcriptPolish === "on",
     whisper: {
       binPath: requireWhisper ? req("WHISPER_CPP_PATH") : opt("WHISPER_CPP_PATH"),
       modelPath: resolveFromRoot(opt("WHISPER_MODEL", "models/ggml-large-v3.bin")),
@@ -83,6 +107,14 @@ export function loadConfig({ dryRun = false, needWhisper = true } = {}) {
       // speech — this is what kills hallucinations / wrong-language / repetition
       // loops on quiet or paused audio. Strongly recommended.
       vadModel: opt("WHISPER_VAD_MODEL") ? resolveFromRoot(opt("WHISPER_VAD_MODEL")) : "",
+      // Transcribe long audio in fixed chunks instead of one pass. whisper.cpp
+      // detects the language ONCE per invocation and carries decoder context
+      // across the whole file, so a single pass over a long call (a) locks the
+      // whole recording to whatever language the first 30s happened to be, and
+      // (b) can fall into a repetition loop that then feeds itself for the rest
+      // of the file. A fresh context + fresh language detection per chunk fixes
+      // both. 0 disables chunking (single pass).
+      chunkSec,
     },
     summaryLang,
   };

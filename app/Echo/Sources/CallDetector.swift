@@ -22,11 +22,10 @@ final class CallDetector {
 
     private let myPID = ProcessInfo.processInfo.processIdentifier
     private let log = Logger(subsystem: "org.leetio.echo", category: "detect")
-    // Daemons spun up by Echo's OWN recording (ScreenCaptureKit → replayd) show as
-    // mic-input processes and never release; they aren't "calls", so ignore them.
-    // corespeechd is also caught by the tap-vs-device check below; kept here as a
-    // fallback in case a macOS update starts reporting devices for its tap.
-    private let excludedNames: Set<String> = ["replayd", "coreaudiod", "corespeechd"]
+    // Processes that hold an input device but are never a call — Echo's own
+    // recording daemons, speech daemons, and the sibling listener apps. See
+    // DetectExclusions; extend without a rebuild via DETECT_EXCLUDE in pipeline/.env.
+    private let excludedNames: Set<String>
     private let pollInterval: TimeInterval = 2
     private let endDebounce: TimeInterval = 5   // mic must stay free this long to end a call
 
@@ -34,7 +33,14 @@ final class CallDetector {
     private var callActive = false
     private var freeSince: Date?
 
+    init(env: [String: String] = Setup.readEnv()) {
+        excludedNames = DetectExclusions.names(env: env)
+    }
+
     func start() {
+        // Logged once so the next app that squats on the mic can be diagnosed
+        // against what is actually being filtered.
+        log.notice("call detection started — ignoring: \(self.excludedNames.sorted().joined(separator: ", "), privacy: .public)")
         let t = DispatchSource.makeTimerSource(queue: .main)
         t.schedule(deadline: .now() + 1, repeating: pollInterval)
         t.setEventHandler { [weak self] in self?.poll() }
