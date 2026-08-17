@@ -13,9 +13,11 @@ swiftc \
   -o "$BIN" \
   "$APP_DIR/Echo/Sources/SessionRotation.swift" \
   "$APP_DIR/Echo/Sources/DetectExclusions.swift" \
+  "$APP_DIR/Echo/Sources/ReconnectGrace.swift" \
   "$APP_DIR/Echo/Tests/Check.swift" \
   "$APP_DIR/Echo/Tests/SessionRotationTests.swift" \
   "$APP_DIR/Echo/Tests/DetectExclusionsTests.swift" \
+  "$APP_DIR/Echo/Tests/ReconnectGraceTests.swift" \
   "$APP_DIR/Echo/Tests/main.swift"
 
 "$BIN"

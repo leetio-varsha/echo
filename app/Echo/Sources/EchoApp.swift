@@ -36,8 +36,18 @@ final class AppState: ObservableObject {
     /// belt-and-braces against a lookup hiccup rotating the recording in a loop.
     private let minAgeBeforeSplit: TimeInterval = 60
 
+    /// Seconds to keep the session open after the call app releases the mic —
+    /// a dropped connection or a dying headset must not split one call into
+    /// several notes. See ReconnectGrace.
+    private let reconnectGrace = ReconnectGrace.seconds(env: Setup.readEnv())
+
     private var rotationTimer: DispatchSourceTimer?
     private var pipelineChain: Task<Void, Never>?
+    /// Pending delayed stop while waiting for a dropped call to come back.
+    /// Non-nil exactly while the session is in its grace window.
+    private var graceTask: Task<Void, Never>?
+    /// When the mic went free — the call's real end, excluding the grace tail.
+    private var micFreeAt: Date?
 
     var menuIcon: String { isRecording ? "record.circle.fill" : "waveform" }
 
@@ -46,14 +56,18 @@ final class AppState: ObservableObject {
 
         detector.onCallStart = { [weak self] in
             Task { @MainActor in
-                guard let self, self.autoDetect, !self.isRecording else { return }
+                guard let self, self.autoDetect else { return }
+                if self.isRecording {
+                    self.resumeFromGrace() // dropped call came back — same note
+                    return
+                }
                 await self.start(auto: true)
             }
         }
         detector.onCallEnd = { [weak self] in
             Task { @MainActor in
                 guard let self, self.isRecording else { return }
-                await self.stop()
+                self.beginGrace()
             }
         }
         detector.start()
@@ -92,14 +106,52 @@ final class AppState: ObservableObject {
         armRotationTimer()
     }
 
+    // MARK: - Reconnect grace
+
+    /// The call app released the mic. Don't close the note yet: keep recording
+    /// and schedule the stop, so a dropped connection or a rebooting headset
+    /// can rejoin the SAME session. `reconnectGrace == 0` stops immediately.
+    private func beginGrace() {
+        micFreeAt = Date()
+        guard reconnectGrace > 0 else {
+            Task { await stop() }
+            return
+        }
+        status = "Call ended — waiting \(Int(reconnectGrace))s for a reconnect…"
+        graceTask?.cancel()
+        graceTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: UInt64(self.reconnectGrace * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self.graceTask = nil
+            await self.stop()
+        }
+    }
+
+    /// A call reappeared while the grace window was open — cancel the pending
+    /// stop and carry on in the same session.
+    private func resumeFromGrace() {
+        guard graceTask != nil else { return }
+        graceTask?.cancel()
+        graceTask = nil
+        micFreeAt = nil
+        refreshStatus()
+    }
+
     /// Close the current recording and hand it to the pipeline queue — or drop it
     /// if it was too short to have been a real call.
     private func closeSession() async {
         guard isRecording else { return }
         isRecording = false
         disarmRotationTimer()
+        graceTask?.cancel()
+        graceTask = nil
 
-        let elapsed = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+        // Session length = up to the moment the mic went free, not the end of
+        // the grace tail — so a brief mic blip still counts as a blip.
+        let endedAt = micFreeAt ?? Date()
+        micFreeAt = nil
+        let elapsed = startedAt.map { endedAt.timeIntervalSince($0) } ?? 0
         let meetingPath = meeting?.jsonURL?.path
         startedAt = nil
         meeting = nil
@@ -150,6 +202,10 @@ final class AppState: ObservableObject {
 
     private func checkRotation() async {
         guard isRecording, let startedAt else { return }
+        // In the grace window the session is already on its way out — rotating
+        // now would reopen a recording with no call behind it. Let the grace
+        // expire (≤ minutes away); a rejoined call resumes rotation checks.
+        guard graceTask == nil else { return }
         let age = Date().timeIntervalSince(startedAt)
 
         // The cap needs no calendar call, so short-circuit before asking EventKit.

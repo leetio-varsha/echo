@@ -4,6 +4,8 @@ import Foundation
 SessionRotationTests.run()
 print("")
 DetectExclusionsTests.run()
+print("")
+ReconnectGraceTests.run()
 
 if Check.failures > 0 {
     print("\n\(Check.failures) failure(s)")
