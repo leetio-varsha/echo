@@ -126,12 +126,18 @@ export async function summarize(cfg, { transcript, projectNames, meeting }) {
     };
   }
 
-  const raw =
-    cfg.summaryBackend === "api"
-      ? await summarizeViaApi(cfg, prompt)
-      : await summarizeViaClaudeCli(cfg, prompt);
+  return parseSummaryResponse(await runClaude(cfg, prompt));
+}
 
-  return parseSummaryResponse(raw);
+/**
+ * Send one prompt to Claude via the configured backend (api | claude-cli) and
+ * return the raw text response. Shared by the summary and the transcript-polish
+ * passes.
+ */
+export async function runClaude(cfg, prompt) {
+  return cfg.summaryBackend === "api"
+    ? await summarizeViaApi(cfg, prompt)
+    : await summarizeViaClaudeCli(cfg, prompt);
 }
 
 /** Backend "api": direct Anthropic API call. Metered — needs ANTHROPIC_API_KEY. */
