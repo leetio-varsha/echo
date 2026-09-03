@@ -50,3 +50,25 @@ fi
 
 echo "Built: $APP"
 echo "Run with: open \"$APP\"   (first launch will prompt for Microphone + Screen Recording)"
+
+# Install into /Applications, because ~/Sites is excluded from Spotlight: a
+# bundle that lives only in app/build/ cannot be launched from the launcher at
+# all, and a copy left in /Applications silently shadows every later rebuild —
+# you fix something, relaunch from Spotlight, and run week-old code.
+#
+# Only the primary checkout installs. A linked worktree bakes ITS OWN path into
+# BuildConfig.repoRoot above, so installing a worktree build would leave
+# /Applications pointing at a directory that `git worktree remove` deletes.
+# Set SKIP_INSTALL=1 to build without touching /Applications.
+INSTALLED="/Applications/Echo.app"
+if [ -n "${SKIP_INSTALL:-}" ]; then
+  echo "Skipped install (SKIP_INSTALL set)."
+elif [ "$(git -C "$REPO_ROOT" rev-parse --git-dir 2>/dev/null)" \
+    != "$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null)" ]; then
+  echo "Worktree build — not installing (it would bake $REPO_ROOT into /Applications)."
+elif rm -rf "$INSTALLED" && ditto "$APP" "$INSTALLED"; then
+  echo "Installed: $INSTALLED"
+  pgrep -qf "$INSTALLED/Contents/MacOS/Echo" && echo "  (still running the old build — quit it from the menu bar and reopen)" || true
+else
+  echo "⚠️  Could not install to $INSTALLED — the build above is still fine."
+fi
