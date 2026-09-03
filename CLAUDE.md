@@ -49,7 +49,8 @@ A task is DONE only when the **Definition of Done** in `memory/rules/execution.m
 3. Use the existing **Calls** / **Projects** Notion DBs; integration must be shared with both.
 4. Degrade gracefully — missing binary/model/match or bad LLM JSON must never crash and lose the transcript.
 5. Build phases in order; don't build ahead of the current phase.
-6. Git: **commit only — never push.**
+6. Git: never commit on `master`; land work via a feature branch. Pushing to the
+   private remote goes through a PR (a hook blocks direct pushes to `master`).
 
 ## Status
 Phase 0 ✅ · Phase 1 ✅ (pipeline) · Phase 2 ✅ (menu-bar app, two-track) · Phase 3 ✅ (auto
