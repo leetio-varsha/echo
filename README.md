@@ -1,17 +1,22 @@
 # Echo
 
-A local, self-hosted replacement for Notion AI Meeting Notes (macOS, Apple Silicon).
+**Notion AI Meeting Notes without the Business plan.** A menu-bar app for macOS that records your calls, transcribes them on-device with whisper.cpp, summarizes with Claude, and files a structured page into your own Notion database.
 
-A menu-bar app detects calls and records them locally; a local pipeline transcribes
-with whisper.cpp (on-device, Metal), summarizes the transcript with Claude (your
-Claude Code subscription by default, or the API), and creates a structured page in
-your Notion **Calls** database. Notion stays a pure frontend/store — no paid
-Business plan needed.
+Audio and the transcript never leave the machine. Claude sees text only. Notion stays a plain store: no paid AI add-on, no recording bot joining your meetings.
 
-**Privacy:** audio and transcription never leave the machine. Only the text
-transcript is sent to Claude.
+**What you get per call**
 
-## Status — all phases built & verified on real calls ✅
+- A Notion page with title, TL;DR, decisions, action items, open questions and participants.
+- Two-track transcript ("Me" / "Them") captured from mic and system audio.
+- Auto start and auto stop: Echo notices the call and the summary is in Notion a minute after you hang up.
+- Calendar enrichment: the current event gives the meeting its name, attendees and project.
+
+**How it runs**
+
+- Summaries go through your Claude Code login by default (no API key, no metered billing), or through the API if you prefer.
+- whisper.cpp on Metal with VAD, large-v3 model, so a 60-minute call transcribes in a few minutes on Apple Silicon.
+
+## Status — built and verified on real calls
 
 - **Phase 1 — pipeline:** `audio → whisper.cpp (VAD, large-v3) → Claude → Notion page`. Testable standalone.
 - **Phase 2 — native app:** SwiftUI `MenuBarExtra`, two-track capture (mic + system audio → "Me / Them").
