@@ -18,8 +18,7 @@ transcript is sent to Claude.
 - **Phase 3 — auto-detect:** per-process Core Audio → auto **start and** auto **stop + summarize**.
 - **Phase 4 — enrichment:** current calendar event (title + attendees) via EventKit → names, title, project.
 
-App build/run: [`app/README.md`](app/README.md). Architecture & onboarding:
-[`memory/architecture/onboarding.md`](memory/architecture/onboarding.md), [`memory/projects/`](memory/projects/).
+App build/run: [`app/README.md`](app/README.md). Domain vocabulary: [`CONTEXT.md`](CONTEXT.md).
 
 ---
 
